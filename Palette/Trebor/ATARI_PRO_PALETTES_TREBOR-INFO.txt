@@ -1,0 +1,50 @@
+OVERVIEW..
+Easy to follow palette sorting by folder:
+
+\\(1) Display Type Colors Imitation\(2) Overall Picture\(3) Saturation Amount\(4) Hue Setting
+
+(1) CRT or LCD
+(2) Bright or Dark
+(3) Saturation 1 (least) - Saturation 4 (most)*
+(4) CRT V1,V2,V3 or LCD V1,V2**
+
+*For Saturation 3 and Saturation 4, there are alternative choices, located in the Alternatives folder.
+
+**CRT_V2 or LCD_V2 is recommended as the hue start point for their respective display type:
+	-CRT with less red push, try CRT_V1; CRT with less green push, try CRT_V3.
+	-Try LCD_V1 for modern display interpretation containing less green push.
+
+
+DETAILS..
+Palette File Names = "ATARI_'REGION'_XXX_YY_ZZZ-TTTT.pal"
+
+'REGION' = Console type
+	-NTSC
+	-PAL
+
+XXX = Display type palette interpretation:
+	-CRT = Palette colors as demonstrated under a typical traditional display (CRT).
+	-LCD = Palette colors as demonstrated under a typical modern display (LCD, OLED, Plasma).
+
+YY = Hue setting interpretation:  
+	-CRT contains three versions..  V3 and V1 hue lean slightly red and green respectively, relative to V2.
+	-LCD contains two versions..  V1 leans slightly less green than V2.
+
+ZZZ = Overall display settings interpretation:
+	-LST = Dark with less saturation.
+	-ATR = Dark with average saturation.
+	-WAB = Dark and rich with no pure white.
+	-DRK = Dark and rich.
+	-STD = Dark with even color ramp.
+	-EVN = Balanced with even color ramp and darker grayscale.
+	-REG = Balanced with even color ramp and lighter grayscale.
+	-OPT = Bright with even color ramp.
+	-BRT = Bright and vibrant. 
+	-NAB = Bright and vibrant with no absolute black.
+	-RTA = Bright with average saturation.
+	-TLS = Bright with less saturation.
+
+TTTT = Console temperature interpretation:
+	-COOL = Console powered on for a few to several minutes.
+	-WARM = Console powered on for more than a few to several minutes.
+	-HOT =  Console powered on for a longer period of time.
