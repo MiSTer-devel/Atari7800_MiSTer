@@ -1,0 +1,14 @@
+TREBORS ATARI 2600 ONLY NTSC & PAL PALETTES V5:
+
+
+UNCALIBRATED = Raw luminance values.
+Ideal Setup Condition: Tap, unmodified RF Video observations.
+
+CALIBRATED = Luminance calibrated per official utility and diagnostic tools.
+Ideal Setup Condition: CRT display viewing.
+
+MODIFIED = Modified luminance for modern displays, accounts for some picture processing features.
+Ideal Setup Condition: Modern display viewing.
+
+SUPER = Superior luminance and saturation.
+Ideal Setup Condition: Showcase and Showroom viewing.
