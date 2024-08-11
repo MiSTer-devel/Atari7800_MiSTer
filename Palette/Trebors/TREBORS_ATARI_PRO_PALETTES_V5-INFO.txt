@@ -1,0 +1,19 @@
+TREBORS_ATARI_PRO_PALETTES_V5-INFO:
+
+\\(1) Region\(2) Luminance Setting\(3) Palette Temperature
+
+(1) NTSC | PAL
+(2) UNCALIBRATED | CALIBRATED | MODIFIED | SUPER
+(3) COOL (25.7) | WARM (26.7) | HOT (27.7)
+
+UNCALIBRATED = Raw luminance values.
+Ideal Setup Condition: Tap, unmodified RF Video observations.
+
+CALIBRATED = Luminance calibrated per official utility and diagnostic tools.
+Ideal Setup Condition: CRT display viewing.
+
+MODIFIED = Modified luminance for modern displays, accounts for some picture processing features.
+Ideal Setup Condition: Modern display viewing.
+
+SUPER = Superior luminance and saturation.
+Ideal Setup Condition: Showcase and Showroom viewing.
