@@ -1,1 +1,0 @@
-Alternative to TREBORS_ATARI_PRO_PALETTES_V4, specifically designed for brighter results, leveraging the most dominant palette temperature for Atari 2600 NTSC (Warm) and PAL (Hot) consoles respectively.  
