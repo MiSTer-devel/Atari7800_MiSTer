@@ -1,0 +1,28 @@
+TREBORS_ATARI_PRO_PALETTES:
+
+\\(1) Region\(2) Luminance Setting\(3) Palette Temperature
+
+(1) NTSC | PAL
+(2) UNCALIBRATED | CALIBRATED | MODIFIED | SUPER
+(3) COOL (25.7) | WARM (26.7) | HOT (27.7)
+
+UNCALIBRATED = Raw luminance values.
+Ideal Usage: Tap, unmodified RF Video observations.
+
+CALIBRATED = Luminance calibrated per official utility and diagnostic tools.
+Ideal Usage: CRT display viewing.
+
+MODIFIED = Modified luminance for modern displays, accounts for some picture processing features.
+Ideal Usage: Modern display viewing.
+
+SUPER = Superior luminance and saturation.
+Ideal Usage: Showcase and Showroom viewing.
+
+GAMMASAT1 = Increased luminance base, retain calibration, default saturation.
+Ideal Usage: Desiring a bright picture and modest color saturation.
+
+GAMMASAT2 = Increased luminance base, retain calibration, substantial saturation increase.
+Ideal Usage: Desiring a bright picture with a boost to saturation.
+
+GAMMASAT3 = Increased luminance base, retain calibration, proportionally increased saturation.
+Ideal Usage: Desiring a bright picture coupled by well saturated colors.
