@@ -1,0 +1,15 @@
+TREBORS_ATARI_PRO_PALETTES_V6-MiSTer:
+
+GAMMASAT1 = Increased luminance base, retain calibration, default saturation.
+Ideal Usage: Desiring a bright picture and modest color saturation.
+
+GAMMASAT2 = Increased luminance base, retain calibration, substantial saturation increase.
+Ideal Usage: Desiring a bright picture with a boost to saturation.
+
+GAMMASAT3 = Increased luminance base, retain calibration, proportionally increased saturation.
+Ideal Usage: Desiring a bright picture coupled by well saturated colors.
+
+Differences from TREBORS_ATARI_PRO_PALETTES_V5-MiSTer:
+1. Added three 'GAMMASAT' series palettes furnishing three saturation levels.
+2. All palettes are consistently bright while maintaining the usual realistic and reasonable results.
+
