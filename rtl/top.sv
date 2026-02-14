@@ -75,6 +75,7 @@ module Atari7800(
 	input logic [7:0]  clearval,
 	input logic [7:0]  random,
 	input logic [1:0]  tape_in,
+	input logic        fix_sc_cs,
 	output logic       tia_hsync,
 	input  logic       use_stereo,
 	input [10:0]       ps2_key,
@@ -511,7 +512,8 @@ module Atari7800(
 		.oe             (),
 		.open_bus       (open_bus),
 		.tape_in        (tape_in),
-		.tape_audio     (tape_audio)
+		.tape_audio     (tape_audio),
+		.fix_sc_cs      (fix_sc_cs)
 	);
 
 endmodule

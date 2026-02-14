@@ -225,7 +225,7 @@ reg old_cart_download;
 // 0         1         2         3          4         5         6
 // 01234567890123456789012345678901 23456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV 0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXXXXXXX   XXXXXXXX
+// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXXXXXXX  XXXXXXXXX
 
 `include "build_id.v"
 parameter CONF_STR = {
@@ -268,14 +268,15 @@ parameter CONF_STR = {
 	"P2o01,Gun Control,Joy1,Joy2,Mouse;",
 	"P2o2,Gun Fire,Joy,Mouse;",
 	"P2o45,Cross,Small,Medium,Big,None;",
-	"D2P4,Atari2600;",
+	"P4,Atari2600;",
 	"D2P4oT,Flickerblend,Off,On;",
 	"D2P4oV,Stabilize Video,On,Off;",
 	"D2P4oF,De-comb,Off,On;",
 	"D2P4oU,Black & White,Off,On;",
 	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF;",
+	"P4oN,Fix SC File Checksums,Off,On;",
 	"D2P4-;",
-	"D2P4rG,Load Tape From ADC;",
+	"P4rG,Load Tape From ADC;",
 	"P3,Advanced;",
 	"P3OH,Bypass Bios,Yes,No;",
 	"P3O1,Clear Memory,Zero,Random;",
@@ -570,6 +571,7 @@ Atari7800 main
 	.decomb       (status[47]),
 	.mapper       (status[60:56]),
 	.tape_in      ({use_tape, tape_adc}),
+	.fix_sc_cs    (status[55]),
 
 	// Palette loading
 	.pal_load     (pal_download),

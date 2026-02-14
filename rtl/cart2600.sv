@@ -39,7 +39,8 @@ module cart2600
 
 	// Tape Signals
 	output          tape_audio, // Tape audio output
-	input    [1:0]  tape_in     // ADC tape input
+	input    [1:0]  tape_in,    // ADC tape input
+	input           fix_sc_cs   // Fix Supercharger Checksums menu option
 );
 	`define NUM_MAPPERS BANKEND
 
@@ -437,7 +438,8 @@ module cart2600
 		.rom_do     (rom_do),
 		.rom_size   (rom_size),
 		.audio_data (tape_audio),
-		.tape_in    (tape_in)
+		.tape_in    (tape_in),
+		.fix_sc_cs  (fix_sc_cs)
 	);
 
 	mapper_WD mapper_WD

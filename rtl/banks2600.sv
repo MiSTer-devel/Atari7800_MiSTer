@@ -733,6 +733,7 @@ module mapper_AR
 	output          ar_read,
 	input   [7:0]   rom_do,
 	input   [1:0]   tape_in,
+	input           fix_sc_cs,
 	output  logic   audio_data,
 	input   [18:0]  rom_size
 );
@@ -749,10 +750,14 @@ module mapper_AR
 	typedef enum logic[3:0] {
 		AR_START,
 		AR_FETCH,
-		AR_EQ_TONE,
+		AR_LOAD_HEADER,
+		AR_LOAD_BLOCK_BYTE,
+		AR_CALC_CHECKSUMS,
+		AR_INC_PAGE_POSITION,
 		AR_PREAMBLE,
 		AR_HEADER,
-		AR_PREBANK,
+		AR_BLOCK_BYTE,
+		AR_CHECKSUM,
 		AR_BANK,
 		AR_POSTAMBLE,
 		AR_END
@@ -775,6 +780,7 @@ module mapper_AR
 	logic  [7:0] page_count;
 	logic [10:0] state_count;
 	logic [16:0] tape_offset;
+	logic pre_fetch_byte;
 	logic fetch_byte;
 	logic playback;
 	logic current_bit;
@@ -783,6 +789,10 @@ module mapper_AR
 	logic [1:0] bank_lut[8][2];
 	logic [1:0] tape_num;
 	logic eq_tone;
+	logic [7:0] header_array [0:7];
+	logic [7:0] block_byte_array [0:23];
+	logic [7:0] block_checksum;
+	logic [7:0] cs_array [0:23];
 
 	// Banks 0-2 are the ram chip selects, bank 3 is the boot rom
 	assign bank_lut[0] = '{2'd2, 2'd3};
@@ -823,7 +833,11 @@ module mapper_AR
 	always_comb begin
 		case (state_next)
 			AR_HEADER: preload_a = {6'b100000, header_a};
-			AR_PREBANK: preload_a = {6'b100000, page_position + (header_toggle ? 8'h40 : 8'h10)};
+			AR_LOAD_HEADER: preload_a = {6'b100000, header_a};
+			AR_BLOCK_BYTE: preload_a = {6'b100000, page_position + 8'h10};
+			AR_LOAD_BLOCK_BYTE: preload_a = {6'b100000, page_position + 8'h10};
+			AR_CHECKSUM: preload_a = {6'b100000, page_position + 8'h40};
+			AR_CALC_CHECKSUMS: preload_a = {3'd0, page_position, bank_a};
 			AR_BANK: preload_a = {3'd0, page_position, bank_a};
 			default: preload_a = 19'd0;
 		endcase
@@ -864,30 +878,59 @@ module mapper_AR
 			case (state)
 				AR_START: begin
 					header_a <= 0;
+					pre_fetch_byte <= 1;
 					fetch_byte <= 0;
 					bit_position <= 0;
 					page_position <= 0;
 					eq_tone <= 0;
 					state_count <= 0;
 					bank_a <= 0;
-					state <= AR_PREAMBLE;
-					state_next <= AR_PREAMBLE;
 					if (tape_offset >= rom_size)
 						tape_num <= 0;
-				end
-				AR_EQ_TONE: begin // The calibration tone isn't really needed here
-					playback <= 1;
-					if (fetch_byte) begin
-						state <= AR_PREAMBLE;
-						state_next <= AR_PREAMBLE;
-					end
+					state_next <= AR_LOAD_HEADER;
+					state <= AR_FETCH;
 				end
 				AR_FETCH: begin
-					if (fetch_byte) begin
+					if (fetch_byte || pre_fetch_byte) begin
 						state <= state_next;
 					end
 				end
+				AR_LOAD_HEADER: begin
+					header_array[header_a] <= ((header_a != 4) ? rom_do : 0);
+					if (header_a == 3) begin
+						page_count <= rom_do;
+					end
+					if (header_a < 7) begin
+						header_a <= header_a + 1'd1;
+						state_next <= AR_LOAD_HEADER;
+					end else begin
+						header_a <= 0;
+						header_array[4] <= 8'h55 - header_array.sum();
+						state_next <= AR_LOAD_BLOCK_BYTE;
+					end
+					state <= AR_FETCH;
+				end
+				AR_LOAD_BLOCK_BYTE: begin
+					block_byte_array[page_position] <= rom_do;
+					block_checksum <= 0;
+					state_next <= AR_CALC_CHECKSUMS;
+					state <= AR_FETCH;
+				end
+				AR_CALC_CHECKSUMS: begin
+					if (&bank_a) begin
+						cs_array[page_position] <= 8'h55 - block_byte_array[page_position] - (block_checksum + rom_do);
+						page_position <= page_position + 1'd1;
+						state_next <= (page_position == (page_count - 1'd1)) || (page_position == 23) ?
+							AR_PREAMBLE : AR_LOAD_BLOCK_BYTE;				
+					end else begin
+						block_checksum <= block_checksum + rom_do;
+						state_next <= AR_CALC_CHECKSUMS;
+					end
+					bank_a <= bank_a + 1'd1;
+					state <= AR_FETCH;
+				end
 				AR_PREAMBLE: begin
+					pre_fetch_byte <= 0;
 					playback <= 1;
 					audio_buffer <= &state_count[8:0] ? 8'h54 : 8'h55;
 					state_count <= state_count + 1'd1;
@@ -895,26 +938,35 @@ module mapper_AR
 					state <= AR_FETCH;
 				end
 				AR_HEADER: begin
-					audio_buffer <= rom_do;
-					if (header_a == 3)
-						page_count <= rom_do;
+					if (fix_sc_cs)
+						audio_buffer <= header_array[header_a];
+					else
+						audio_buffer <= rom_do;
 					if (header_a < 7) begin
 						header_a <= header_a + 1'd1;
 						state_next <= AR_HEADER;
 					end else begin
 						header_a <= 0;
-						state_next <= AR_PREBANK;
+						page_position <= 0;
+						state_next <= AR_BLOCK_BYTE;
 					end
 					state <= AR_FETCH;
 				end
-				AR_PREBANK: begin
-					audio_buffer <= rom_do;
-					header_toggle <= ~header_toggle;
-					if (header_toggle) begin
-						state_next <= AR_BANK;
-					end else begin
-						state_next <= AR_PREBANK;
-					end
+				AR_BLOCK_BYTE: begin
+					if (fix_sc_cs)
+						audio_buffer <= block_byte_array[page_position];
+					else
+						audio_buffer <= rom_do;
+					state_next <= AR_CHECKSUM;
+					state <= AR_FETCH;
+				end
+				AR_CHECKSUM: begin
+					if (fix_sc_cs)
+						audio_buffer <= cs_array[page_position];
+					else
+						audio_buffer <= rom_do;
+					bank_a <= 0;
+					state_next <= AR_BANK;
 					state <= AR_FETCH;
 				end
 				AR_BANK: begin
@@ -922,7 +974,7 @@ module mapper_AR
 					if (&bank_a) begin
 						page_position <= page_position + 1'd1;
 						state_next <= (page_position == (page_count - 1'd1)) || (page_position == 23) ?
-							AR_POSTAMBLE : AR_PREBANK;
+							AR_POSTAMBLE : AR_BLOCK_BYTE;
 					end else
 						state_next <= AR_BANK;
 					bank_a <= bank_a + 1'd1;
@@ -940,6 +992,7 @@ module mapper_AR
 				end
 				AR_END: begin
 					playback <= 0;
+					pre_fetch_byte <= 0;
 					audio_buffer <= 0;
 					audio_data <= 0;
 				end
