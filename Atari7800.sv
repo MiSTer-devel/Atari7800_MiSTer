@@ -276,7 +276,7 @@ parameter CONF_STR = {
 	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF;",
 	"P4oN,Fix SC File Checksums,Off,On;",
 	"D2P4-;",
-	"P4rG,Load Tape From ADC;",
+	"D2P4rG,Load Tape From ADC;",
 	"P3,Advanced;",
 	"P3OH,Bypass Bios,Yes,No;",
 	"P3O1,Clear Memory,Zero,Random;",
