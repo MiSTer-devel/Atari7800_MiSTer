@@ -274,7 +274,7 @@ parameter CONF_STR = {
 	"D2P4oF,De-comb,Off,On;",
 	"D2P4oU,Black & White,Off,On;",
 	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF;",
-	"P4oN,Fix SC File Checksums,Off,On;",
+	"P4oN,Fix SC File Checksums,On,Off;",
 	"D2P4-;",
 	"D2P4rG,Load Tape From ADC;",
 	"P3,Advanced;",
@@ -571,7 +571,7 @@ Atari7800 main
 	.decomb       (status[47]),
 	.mapper       (status[60:56]),
 	.tape_in      ({use_tape, tape_adc}),
-	.fix_sc_cs    (status[55]),
+	.fix_sc_cs    (~status[55]),
 
 	// Palette loading
 	.pal_load     (pal_download),

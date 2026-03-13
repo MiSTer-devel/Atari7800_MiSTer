@@ -744,7 +744,7 @@ module mapper_AR
 	// clock as the DPC mapper above.
 	localparam CYCLES_PER_HALF_1        = 12'd608;
 	localparam CYCLES_PER_HALF_0        = 12'd405;
-	localparam PREAMBLE_CYCLES_PER_HALF = 12'd2384;
+//	localparam PREAMBLE_CYCLES_PER_HALF = 12'd2384;
 	localparam COOLDOWN_PERIOD          = 16'hFFF;
 	
 	typedef enum logic[3:0] {
@@ -778,8 +778,7 @@ module mapper_AR
 	logic [11:0] audio_timer;
 	logic [3:0] bit_position;
 	logic [7:0] page_position;
-	logic header_toggle;
-	logic  [7:0] page_count;
+	logic [7:0] page_count;
 	logic [10:0] state_count;
 	logic [16:0] tape_offset;
 	logic pre_fetch_byte;
@@ -790,11 +789,11 @@ module mapper_AR
 	logic [15:0] cooldown;
 	logic [1:0] bank_lut[8][2];
 	logic [1:0] tape_num;
-	logic eq_tone;
+//	logic eq_tone;
 	logic [7:0] header_array [0:7];
-	logic [7:0] block_byte_array [0:23];
+	(* ramstyle = "logic" *) logic [7:0] block_byte_array [0:23];
 	logic [7:0] block_checksum;
-	logic [7:0] cs_array [0:23];
+	(* ramstyle = "logic" *) logic [7:0] cs_array [0:23];
 
 	// Banks 0-2 are the ram chip selects, bank 3 is the boot rom
 	                                       //     bank     a11=0 a11=1
@@ -868,6 +867,7 @@ module mapper_AR
 			fetch_byte <= 0;
 			if (playback) begin
 				audio_timer <= audio_timer + 1'd1;
+/*
 				if (eq_tone && audio_timer == PREAMBLE_CYCLES_PER_HALF) begin
 					audio_timer <= 0;
 					audio_data <= ~audio_data;
@@ -876,7 +876,9 @@ module mapper_AR
 						fetch_byte <= 1;
 						eq_tone <= 0;
 					end
-				end else if (~eq_tone && audio_timer == (current_bit ? CYCLES_PER_HALF_1 : CYCLES_PER_HALF_0)) begin
+				end else 
+*/
+				if ( /* ~eq_tone && */ audio_timer == (current_bit ? CYCLES_PER_HALF_1 : CYCLES_PER_HALF_0)) begin
 					audio_timer <= 0;
 					bit_position <= bit_pos_minus_1;
 					audio_data <= bit_position[0];
@@ -893,7 +895,7 @@ module mapper_AR
 					fetch_byte <= 0;
 					bit_position <= 0;
 					page_position <= 0;
-					eq_tone <= 0;
+//					eq_tone <= 0;
 					state_count <= 0;
 					page_a <= 0;
 					if (tape_offset >= rom_size)
@@ -909,7 +911,7 @@ module mapper_AR
 				AR_LOAD_HEADER: begin
 					// header_array[4] is the header checksum.  Set it to 0.
 					// Copy other header values to header_array
-					header_array[header_a] <= ((header_a != 4) ? rom_do : 0);
+					header_array[header_a] <= ((header_a != 4) ? rom_do : 8'd0);
 					if (header_a == 3) begin
 						page_count <= rom_do;
 					end
@@ -945,6 +947,15 @@ module mapper_AR
 					page_a <= page_a + 1'd1;
 					state <= AR_FETCH;
 				end
+/*
+				AR_EQ_TONE: begin // The calibration tone isn't really needed here
+					playback <= 1;
+					if (fetch_byte) begin
+						state <= AR_PREAMBLE;
+						state_next <= AR_PREAMBLE;
+					end
+				end
+*/
 				AR_PREAMBLE: begin
 					// Now that we're ready to send audio data, turn off pre_fetch_byte so audio timing works correctly
 					pre_fetch_byte <= 0;
