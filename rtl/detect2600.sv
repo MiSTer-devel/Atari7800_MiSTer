@@ -774,8 +774,8 @@ bool CartDetector::isProbablyCV(const ByteBuffer& image, size_t size)
 // UA detector
 //-------------------------------
 
-wire hasMatchUA_0 , hasMatchUA_1 , hasMatchUA_2 , hasMatchUA_3 , hasMatchUA_4 , hasMatchUA_5 , hasMatchUA_6;
-wire hasMatchUA = hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_5 | hasMatchUA_6;
+wire hasMatchUA_0 , hasMatchUA_1 , hasMatchUA_2 , hasMatchUA_3 , hasMatchUA_4 , hasMatchUA_5 , hasMatchUA_6 , hasMatchUA_7;
+wire hasMatchUA = hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_5 | hasMatchUA_6 | hasMatchUA_7;
 
 match_bytes #(
 	.num_bytes(8'd3),
@@ -868,29 +868,39 @@ match_bytes #(
 	.data(data),
 	.hasMatch(hasMatchUA_6)
 );
+
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h2C, 8'hB0 , 8'h0F }),
+	.needmatches(8'd1)
+	) match_bytes_UA_7(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchUA_7)
+);
+
 /*
-bool CartDetector::isProbablyUA(const ByteBuffer& image, size_t size)
+bool CartDetector::isProbablyUA(ByteSpan image)
 {
   // UA cart bankswitching switches to bank 1 by accessing address 0x240
-  // using 'STA $240' or 'LDA $240'
-  // Similar Brazilian (Digivison) cart bankswitching switches to bank 1 by accessing address 0x2C0
-  // using 'BIT $2C0', 'STA $2C0' or 'LDA $2C0'
-  // Other Brazilian (Atari Mania) ROM's bankswitching switches to bank 1 by accessing address 0xFC0
-  // using 'BIT $FA0', 'BIT $FC0' or 'STA $FA0'
-  uInt8 signature[7][3] = {
+  // using 'STA $240' or 'LDA $240'.
+  // Brazilian (Digivision) cart bankswitching switches to bank 1 by accessing
+  // address 0x2C0 using 'BIT $2C0', 'STA $2C0', 'LDA $2C0' or 'BIT $FB0'
+  static constexpr BSPF::array2D<uInt8, 7, 3> signature = {{
     { 0x8D, 0x40, 0x02 },  // STA $240 (Funky Fish, Pleiades)
     { 0xAD, 0x40, 0x02 },  // LDA $240 (???)
     { 0xBD, 0x1F, 0x02 },  // LDA $21F,X (Gingerbread Man)
     { 0x2C, 0xC0, 0x02 },  // BIT $2C0 (Time Pilot)
     { 0x8D, 0xC0, 0x02 },  // STA $2C0 (Fathom, Vanguard)
     { 0xAD, 0xC0, 0x02 },  // LDA $2C0 (Mickey)
-    { 0x2C, 0xC0, 0x0F }   // BIT $FC0 (H.E.R.O., Kung-Fu Master)
-  };
-  for(uInt32 i = 0; i < 7; ++i)
-    if(searchForBytes(image, size, signature[i], 3))
-      return true;
-
-  return false;
+    { 0x2C, 0xB0, 0x0F }   // BIT $FB0 (Digivision Beamrider)
+  }};
+  return std::ranges::any_of(signature, [&](const auto& sig) {
+    return searchForBytes(image, sig);
+  });
 }
 */
 
