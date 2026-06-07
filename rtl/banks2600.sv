@@ -744,7 +744,7 @@ module mapper_AR
 	// clock as the DPC mapper above.
 	localparam CYCLES_PER_HALF_1        = 12'd608;
 	localparam CYCLES_PER_HALF_0        = 12'd405;
-	localparam PREAMBLE_CYCLES_PER_HALF = 12'd2384;
+//	localparam PREAMBLE_CYCLES_PER_HALF = 12'd2384;
 	localparam COOLDOWN_PERIOD          = 16'hFFF;
 	
 	typedef enum logic[3:0] {
@@ -763,21 +763,22 @@ module mapper_AR
 		AR_END
 	} ar_load_state;
 
-	logic [2:0] bank;
-	logic [5:0] we_cycle;
+	logic [2:0] bank;								// bank bits from control register.  First index for bank_lut array
+	logic [5:0] we_cycle;						// Shift register for control register read
 	logic [7:0] bios_data;
-	logic ram_we;
-	logic [7:0] we_byte;
-	logic rom_en;
+	logic ram_we;									// RAM Write Enable
+	logic [7:0] control_byte;					// byte received after control byte access
+	// This is not used by the mapper, but documentation indicates that it controls the ROM power 0=On, 1=Off
+	// Doesn't seem to affect anything.  Leaving in to explore as a future enhancement if problems are encountered.
+	//logic rom_en;
 	logic [18:0] preload_a;
-	logic [7:0] header_a;
-	logic [7:0] bank_a;
+	logic [2:0] header_a;						// Index for page header
+	logic [7:0] page_a;							// Index into current 256 byte page being loaded
 	ar_load_state state, state_next;
 	logic [11:0] audio_timer;
 	logic [3:0] bit_position;
 	logic [7:0] page_position;
-	logic header_toggle;
-	logic  [7:0] page_count;
+	logic [7:0] page_count;
 	logic [10:0] state_count;
 	logic [16:0] tape_offset;
 	logic pre_fetch_byte;
@@ -788,26 +789,30 @@ module mapper_AR
 	logic [15:0] cooldown;
 	logic [1:0] bank_lut[8][2];
 	logic [1:0] tape_num;
-	logic eq_tone;
+//	logic eq_tone;
 	logic [7:0] header_array [0:7];
-	logic [7:0] block_byte_array [0:23];
+	(* ramstyle = "logic" *) logic [7:0] block_byte_array [0:23];
 	logic [7:0] block_checksum;
-	logic [7:0] cs_array [0:23];
+	(* ramstyle = "logic" *) logic [7:0] cs_array [0:23];
 
 	// Banks 0-2 are the ram chip selects, bank 3 is the boot rom
-	assign bank_lut[0] = '{2'd2, 2'd3};
-	assign bank_lut[1] = '{2'd0, 2'd3};
-	assign bank_lut[2] = '{2'd2, 2'd0};
-	assign bank_lut[3] = '{2'd0, 2'd2};
-	assign bank_lut[4] = '{2'd2, 2'd3};
-	assign bank_lut[5] = '{2'd1, 2'd3};
-	assign bank_lut[6] = '{2'd2, 2'd1};
-	assign bank_lut[7] = '{2'd1, 2'd2};
+	                                       //     bank     a11=0 a11=1
+	                                       //    RAM/ROM  CONFIGURATION
+	                                       //     VALUE   $F000 $F800
+	assign bank_lut[0] = '{2'd2, 2'd3};    //      000      3    ROM
+	assign bank_lut[1] = '{2'd0, 2'd3};    //      001      1    ROM
+	assign bank_lut[2] = '{2'd2, 2'd0};    //      010      3     1
+	assign bank_lut[3] = '{2'd0, 2'd2};    //      011      1     3
+	assign bank_lut[4] = '{2'd2, 2'd3};    //      100      3    ROM
+	assign bank_lut[5] = '{2'd1, 2'd3};    //      101      2    ROM
+	assign bank_lut[6] = '{2'd2, 2'd1};    //      110      3     2
+	assign bank_lut[7] = '{2'd1, 2'd2};    //      111      2     3
 
-	wire adata_select = a_in == 13'h1FF9;
+	wire adata_select = a_in == 13'h1FF9;	
 	wire is_control_reg = a_in == 13'h1FF8;
 	wire [3:0] bit_pos_minus_1 = bit_position - 1'd1;
 	wire rom_bank = &current_bank;
+	// If current_bank == 3 then SC ROM is running
 	wire [1:0] current_bank = ~a_in[11] ? bank_lut[bank][0] : bank_lut[bank][1];
 	wire adc_load = tape_in[1];
 
@@ -816,10 +821,14 @@ module mapper_AR
 	assign oe = a_in[12] ? 8'hFF : 8'h00;
 	assign ram_sel = a_in[12] && ~rom_bank;
 	assign ram_a = {current_bank, a_in[10:0]};
+	// 0=Write, 1=Read
 	assign ram_rw = ~(a_in[12] && ram_we && we_cycle[5] && ~a_change && ~is_control_reg && ~rom_bank);
 	assign rom_a = preload_a + tape_offset;
 	assign ar_read = ce;
-	assign d_out = ~ram_rw ? we_byte : (adata_select ? {7'd0, audio_data} : bios_data);
+	// If RAM is Write-enabled put the control_byte on the data line
+	// Else If audio data is enabled put it on the data line
+	// Else put the bios data on the data line
+	assign d_out = ~ram_rw ? control_byte : (adata_select ? {7'd0, audio_data} : bios_data);
 
 	// Supercharger
 	spram #(.addr_width(11), .mem_init_file("ar.mif")) ar_rom
@@ -832,13 +841,13 @@ module mapper_AR
 	
 	always_comb begin
 		case (state_next)
-			AR_HEADER: preload_a = {6'b100000, header_a};
-			AR_LOAD_HEADER: preload_a = {6'b100000, header_a};
+			AR_HEADER: preload_a = {11'b10000000000, header_a};
+			AR_LOAD_HEADER: preload_a = {11'b10000000000, header_a};
 			AR_BLOCK_BYTE: preload_a = {6'b100000, page_position + 8'h10};
 			AR_LOAD_BLOCK_BYTE: preload_a = {6'b100000, page_position + 8'h10};
 			AR_CHECKSUM: preload_a = {6'b100000, page_position + 8'h40};
-			AR_CALC_CHECKSUMS: preload_a = {3'd0, page_position, bank_a};
-			AR_BANK: preload_a = {3'd0, page_position, bank_a};
+			AR_CALC_CHECKSUMS: preload_a = {3'd0, page_position, page_a};
+			AR_BANK: preload_a = {3'd0, page_position, page_a};
 			default: preload_a = 19'd0;
 		endcase
 		case (tape_num)
@@ -858,6 +867,7 @@ module mapper_AR
 			fetch_byte <= 0;
 			if (playback) begin
 				audio_timer <= audio_timer + 1'd1;
+/*
 				if (eq_tone && audio_timer == PREAMBLE_CYCLES_PER_HALF) begin
 					audio_timer <= 0;
 					audio_data <= ~audio_data;
@@ -866,7 +876,9 @@ module mapper_AR
 						fetch_byte <= 1;
 						eq_tone <= 0;
 					end
-				end else if (~eq_tone && audio_timer == (current_bit ? CYCLES_PER_HALF_1 : CYCLES_PER_HALF_0)) begin
+				end else 
+*/
+				if ( /* ~eq_tone && */ audio_timer == (current_bit ? CYCLES_PER_HALF_1 : CYCLES_PER_HALF_0)) begin
 					audio_timer <= 0;
 					bit_position <= bit_pos_minus_1;
 					audio_data <= bit_position[0];
@@ -878,13 +890,14 @@ module mapper_AR
 			case (state)
 				AR_START: begin
 					header_a <= 0;
+					// When this is 1 the state machine will advance the state to state_next and not reset the value
 					pre_fetch_byte <= 1;
 					fetch_byte <= 0;
 					bit_position <= 0;
 					page_position <= 0;
-					eq_tone <= 0;
+//					eq_tone <= 0;
 					state_count <= 0;
-					bank_a <= 0;
+					page_a <= 0;
 					if (tape_offset >= rom_size)
 						tape_num <= 0;
 					state_next <= AR_LOAD_HEADER;
@@ -896,28 +909,33 @@ module mapper_AR
 					end
 				end
 				AR_LOAD_HEADER: begin
-					header_array[header_a] <= ((header_a != 4) ? rom_do : 0);
+					// header_array[4] is the header checksum.  Set it to 0.
+					// Copy other header values to header_array
+					header_array[header_a] <= ((header_a != 4) ? rom_do : 8'd0);
 					if (header_a == 3) begin
 						page_count <= rom_do;
 					end
 					if (header_a < 7) begin
-						header_a <= header_a + 1'd1;
 						state_next <= AR_LOAD_HEADER;
 					end else begin
-						header_a <= 0;
+						// Calculate header checksum
 						header_array[4] <= 8'h55 - header_array.sum();
 						state_next <= AR_LOAD_BLOCK_BYTE;
 					end
+					header_a <= header_a + 1'd1;
 					state <= AR_FETCH;
 				end
 				AR_LOAD_BLOCK_BYTE: begin
+					// Block byte indicates where the next 256 bytes will load to
+					// XXXPPPBB, X = useless P = page address, B = ram chip (bank) number.
 					block_byte_array[page_position] <= rom_do;
 					block_checksum <= 0;
 					state_next <= AR_CALC_CHECKSUMS;
 					state <= AR_FETCH;
 				end
 				AR_CALC_CHECKSUMS: begin
-					if (&bank_a) begin
+					if (&page_a) begin
+						// If we're on the last byte in the block add it to the block total and calculate the final checksum
 						cs_array[page_position] <= 8'h55 - block_byte_array[page_position] - (block_checksum + rom_do);
 						page_position <= page_position + 1'd1;
 						state_next <= (page_position == (page_count - 1'd1)) || (page_position == 23) ?
@@ -926,10 +944,20 @@ module mapper_AR
 						block_checksum <= block_checksum + rom_do;
 						state_next <= AR_CALC_CHECKSUMS;
 					end
-					bank_a <= bank_a + 1'd1;
+					page_a <= page_a + 1'd1;
 					state <= AR_FETCH;
 				end
+/*
+				AR_EQ_TONE: begin // The calibration tone isn't really needed here
+					playback <= 1;
+					if (fetch_byte) begin
+						state <= AR_PREAMBLE;
+						state_next <= AR_PREAMBLE;
+					end
+				end
+*/
 				AR_PREAMBLE: begin
+					// Now that we're ready to send audio data, turn off pre_fetch_byte so audio timing works correctly
 					pre_fetch_byte <= 0;
 					playback <= 1;
 					audio_buffer <= &state_count[8:0] ? 8'h54 : 8'h55;
@@ -943,13 +971,12 @@ module mapper_AR
 					else
 						audio_buffer <= rom_do;
 					if (header_a < 7) begin
-						header_a <= header_a + 1'd1;
 						state_next <= AR_HEADER;
 					end else begin
-						header_a <= 0;
 						page_position <= 0;
 						state_next <= AR_BLOCK_BYTE;
 					end
+					header_a <= header_a + 1'd1;
 					state <= AR_FETCH;
 				end
 				AR_BLOCK_BYTE: begin
@@ -965,19 +992,19 @@ module mapper_AR
 						audio_buffer <= cs_array[page_position];
 					else
 						audio_buffer <= rom_do;
-					bank_a <= 0;
+					page_a <= 0;
 					state_next <= AR_BANK;
 					state <= AR_FETCH;
 				end
 				AR_BANK: begin
 					audio_buffer <= rom_do;
-					if (&bank_a) begin
+					if (&page_a) begin
 						page_position <= page_position + 1'd1;
 						state_next <= (page_position == (page_count - 1'd1)) || (page_position == 23) ?
 							AR_POSTAMBLE : AR_BLOCK_BYTE;
 					end else
 						state_next <= AR_BANK;
-					bank_a <= bank_a + 1'd1;
+					page_a <= page_a + 1'd1;
 					state <= AR_FETCH;
 				end
 				AR_POSTAMBLE: begin
@@ -999,26 +1026,45 @@ module mapper_AR
 			endcase
 		end
 
+		// The Supercharger waits exactly 5 address-changes to pick up the control_byte
 		if (a_change) begin
+			// Bit-shift address-change counter left
 			we_cycle <= {we_cycle[4:0], 1'b0};
 			
+			// If $1ff9 was accessed and playback is not enabled
 			if (adata_select && ~playback) begin
 				if (|cooldown)
 					cooldown <= cooldown - 1'd1;
-				else if (~adc_load)
+				else if (~adc_load && current_bank == 3)
+					// If we're not in the cooldown period and not loading from tape and the ROM is enabled
+					// we must be ready to send audio data from the file
 					state <= AR_START;
 			end
 
 			if (a_in == 13'h1FF8) begin // Control Register
-				bank <= we_byte[4:2];
-				ram_we <= we_byte[1];
-				//rom_en <= we_byte[0];
+				// L' Byte De Control
+				// dddbbbwp
+				// -----------------------
+				// ddd = Write Pulse Delay
+				// bbb = bank
+				// w   = Write Enabled (=1)
+				// p   = ROM Power (OFF=1)
+				
+				bank <= control_byte[4:2];
+				ram_we <= control_byte[1];
+				//rom_en <= control_byte[0];
 				we_cycle <= '0;
 			end
-
-			if (a_in[12] && ~|a_in[11:8] && (~|we_cycle[4:0] || ~ram_we)) begin
+			
+			// The control byte/ram value is pulled off the address line when a_in looks like this:
+			// b10000xxxxxxxx or h10xx where the x's represent the value
+			// and 5 address changes have passed since an address in the h10 page was accessed (we_cycle == 100000)
+			// If the ram is write enabled the value will be written to the latest address on the address line
+			// The next time h1FF8 is accessed the value in the control byte is used to configure the banks and write enable mode
+			if (a_in[12:8] == 5'h10 && (~|we_cycle[4:0] || ~ram_we)) begin
+				// Reset address-change counter to 000001
 				we_cycle <= 5'd1;
-				we_byte <= a_in[7:0];
+				control_byte <= a_in[7:0];
 			end
 		end
 
