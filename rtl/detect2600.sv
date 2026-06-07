@@ -774,8 +774,8 @@ bool CartDetector::isProbablyCV(const ByteBuffer& image, size_t size)
 // UA detector
 //-------------------------------
 
-wire hasMatchUA_0 , hasMatchUA_1 , hasMatchUA_2 , hasMatchUA_3 , hasMatchUA_4 , hasMatchUA_5 , hasMatchUA_6 , hasMatchUA_7;
-wire hasMatchUA = hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_5 | hasMatchUA_6 | hasMatchUA_7;
+wire hasMatchUA_0 , hasMatchUA_1 , hasMatchUA_2 , hasMatchUA_3 , hasMatchUA_4 , hasMatchUA_5 , hasMatchUA_6 , hasMatchUA_7 , hasMatchUA_8 , hasMatchUA_9 , hasMatchUA_10 , hasMatchUA_11;
+wire hasMatchUA = hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_5 | hasMatchUA_6 | hasMatchUA_7 | hasMatchUA_8 | hasMatchUA_9 | hasMatchUA_10 | hasMatchUA_11;
 
 match_bytes #(
 	.num_bytes(8'd3),
@@ -882,6 +882,58 @@ match_bytes #(
 	.hasMatch(hasMatchUA_7)
 );
 
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h2C, 8'hC0 , 8'h0F }),
+	.needmatches(8'd1)
+	) match_bytes_UA_8(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchUA_8)
+);
+
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h8D, 8'hC0 , 8'h0F }),
+	.needmatches(8'd1)
+	) match_bytes_UA_9(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchUA_9)
+);
+
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'hAD, 8'hC0 , 8'h0F }),
+	.needmatches(8'd1)
+	) match_bytes_UA_10(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchUA_10)
+);
+
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h2C, 8'hC0 , 8'hEF }),
+	.needmatches(8'd1)
+	) match_bytes_UA_11(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchUA_11)
+);
+
 /*
 bool CartDetector::isProbablyUA(ByteSpan image)
 {
@@ -889,14 +941,18 @@ bool CartDetector::isProbablyUA(ByteSpan image)
   // using 'STA $240' or 'LDA $240'.
   // Brazilian (Digivision) cart bankswitching switches to bank 1 by accessing
   // address 0x2C0 using 'BIT $2C0', 'STA $2C0', 'LDA $2C0' or 'BIT $FB0'
-  static constexpr BSPF::array2D<uInt8, 7, 3> signature = {{
+  static constexpr BSPF::array2D<uInt8, 11, 3> signature = {{
     { 0x8D, 0x40, 0x02 },  // STA $240 (Funky Fish, Pleiades)
     { 0xAD, 0x40, 0x02 },  // LDA $240 (???)
     { 0xBD, 0x1F, 0x02 },  // LDA $21F,X (Gingerbread Man)
     { 0x2C, 0xC0, 0x02 },  // BIT $2C0 (Time Pilot)
     { 0x8D, 0xC0, 0x02 },  // STA $2C0 (Fathom, Vanguard)
     { 0xAD, 0xC0, 0x02 },  // LDA $2C0 (Mickey)
-    { 0x2C, 0xB0, 0x0F }   // BIT $FB0 (Digivision Beamrider)
+    { 0x2C, 0xB0, 0x0F },  // BIT $FB0 (Digivision Beamrider)
+    { 0x2C, 0xC0, 0x0F },  // BIT $FC0  (H.E.R.O., Kung-Fu Master)
+    { 0x8D, 0xC0, 0x0F },  // STA $FC0  (Pole Position, Subterranea)
+    { 0xAD, 0xC0, 0x0F },  // LDA $FC0  (Front Line, Zaxxon)
+    { 0x2C, 0xC0, 0xEF }   // BIT $EFC0 (Motocross)
   }};
   return std::ranges::any_of(signature, [&](const auto& sig) {
     return searchForBytes(image, sig);

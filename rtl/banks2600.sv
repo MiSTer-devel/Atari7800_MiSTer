@@ -570,7 +570,7 @@ module mapper_UA
 
 	always @(posedge clk) begin
 		if (a_change) begin
-			case (a_in & 13'h1260)
+			case (a_in & 13'h126F)
 				13'h0220: bank <= swapped;
 				13'h0240: bank <= ~swapped;
 				default: ;
