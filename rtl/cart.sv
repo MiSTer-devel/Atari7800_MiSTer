@@ -57,8 +57,8 @@ logic [7:0] hsc_ram_dout;
 logic [7:0] pokey4k_dout, pokey2_dout;
 
 logic rom_cs, ram_cs, pokey_cs, ym_cs;
-logic [2:0] hardware_map[8];
-logic [7:0] bank_map[8];
+logic [2:0] hardware_map[16];
+logic [7:0] bank_map[16];
 logic [2:0] bank_type; // 00 = Supergame, 01 = Activision, 02 = none 03 = absolute
 logic [31:0] address_offset;
 logic [2:0] cart_cs_reg, cart_cs_reg_m;
@@ -101,12 +101,15 @@ wire is_bankset_mem = cart_flags[14];
 wire bankset_banks = is_bankset & bankset_count[1];
 assign cart_size_bs = is_bankset ? (cart_size >> 1'd1) : cart_size;
 
-wire [7:0] highest_bank = (8'hFF & bank_mask) + is_9b;
-wire [7:0] second_highest_bank = is_9b ? 8'd0 : (8'hFE & bank_mask);
+wire [7:0] num_banks = (cart_size_bs >> 14);
+wire [7:0] highest_bank = num_banks ? num_banks - 1'd1 : is_9b;
+wire [7:0] second_highest_bank = is_9b ? 8'd0 : (highest_bank ? highest_bank - 1'd1 : 8'd0);
 wire [7:0] sg_bank = (bank_reg & bank_mask) + is_9b;
+wire is_bankset_52k = (is_bankset && cart_size_bs == 32'hD000);
+
 always_ff @(posedge clk_sys) if (pclk1) begin
-	hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0};
-	bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0};
+	hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0};
+	bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0};
 	bank_type <= 3'd0;
 	address_offset <= 32'd0;
 	bank_mask <= 8'b11111111;
@@ -121,26 +124,65 @@ always_ff @(posedge clk_sys) if (pclk1) begin
 
 	// Banking mode selector
 	if (cart_flags[8]) begin                                   // Activision
-		hardware_map <= '{3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
-		bank_map <= '{8'd0, 8'd0, 8'd13, 8'd12, 8'd15, 8'd0, 8'd0, 8'd14};
-		bank_map[5] <= {bank_reg[2:0], 1'b0};
-		bank_map[6] <= {bank_reg[2:0], 1'b1};
+		hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
+		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd13, 8'd13, 8'd12, 8'd12, 8'd15, 8'd15, 8'd0, 8'd0, 8'd0, 8'd0, 8'd14, 8'd14};
+		bank_map[10] <= {bank_reg[2:0], 1'b0};
+		bank_map[11] <= {bank_reg[2:0], 1'b0};
+		bank_map[12] <= {bank_reg[2:0], 1'b1};
+		bank_map[13] <= {bank_reg[2:0], 1'b1};
 		bank_type <= 3'd1;
 	end else if (cart_flags[9]) begin                           // Absolute
-		hardware_map <= '{3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
-		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd2, 8'd2, 8'd3, 8'd3};
-		bank_map[2] <= {3'b000, bank_reg[1]};
-		bank_map[3] <= {3'b000, bank_reg[1]};
+		hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
+		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd2, 8'd2, 8'd2, 8'd2, 8'd3, 8'd3, 8'd3, 8'd3};
+		bank_map[4] <= {3'b000, bank_reg[1]};
+		bank_map[5] <= {3'b000, bank_reg[1]};
+		bank_map[6] <= {3'b000, bank_reg[1]};
+		bank_map[7] <= {3'b000, bank_reg[1]};
 		bank_type <= 3'd3;
 	end else if (cart_flags[12]) begin                           // Souper
-		hardware_map <= '{3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
+		hardware_map <= '{3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
 		bank_type <= 3'd4;
 	end else if (cart_flags[13] || cart_flags[14] || cart_flags[1] || cart_size_bs >= 32'h10000) begin // SuperGame
-		hardware_map <= '{3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
-		bank_map <= '{8'd0, 8'd0, second_highest_bank, second_highest_bank, 8'd0, 8'd0, highest_bank, highest_bank};
-		bank_map[4] <= sg_bank;
-		bank_map[5] <= sg_bank;
-		if (cart_size_bs[22]) begin
+		hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
+		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, second_highest_bank, second_highest_bank, second_highest_bank, second_highest_bank, 8'd0, 8'd0, 8'd0, 8'd0, highest_bank, highest_bank, highest_bank, highest_bank};
+		bank_map[8] <= sg_bank;
+		bank_map[9] <= sg_bank;
+		bank_map[10] <= sg_bank;
+		bank_map[11] <= sg_bank;
+		if (is_bankset && cart_size_bs == 32'h8000) begin // 2x32K contigous banksets (HALT based bankset switching only)
+			bank_mask <= 8'b00000001;
+			bs_map <= 9'b0_0000_0010;
+			bank_map[8] <= 8'd0;
+			bank_map[9] <= 8'd0;
+			bank_map[10] <= 8'd0;
+			bank_map[11] <= 8'd0;
+		end else if (is_bankset && cart_size_bs == 32'hC000) begin // 2x48K contigous banksets (HALT based bankset switching only)
+			bank_mask <= 8'b00000011;
+			bs_map <= 9'b0_0000_0011;
+			bank_map[4] <= 8'd0;
+			bank_map[5] <= 8'd0;
+			bank_map[6] <= 8'd0;
+			bank_map[7] <= 8'd0;
+			bank_map[8] <= 8'd1;
+			bank_map[9] <= 8'd1;
+			bank_map[10] <= 8'd1;
+			bank_map[11] <= 8'd1;
+		end else if (is_bankset_52k) begin // 2x52K contigous banksets (HALT based bankset switching only)
+			hardware_map[3] <= 3'd4;
+			bank_map[3] <= 8'd0;
+			bank_map[4] <= 8'd1;
+			bank_map[5] <= 8'd1;
+			bank_map[6] <= 8'd1;
+			bank_map[7] <= 8'd1;
+			bank_map[8] <= 8'd2;
+			bank_map[9] <= 8'd2;
+			bank_map[10] <= 8'd2;
+			bank_map[11] <= 8'd2;
+			bank_map[12] <= 8'd3;
+			bank_map[13] <= 8'd3;
+			bank_map[14] <= 8'd3;
+			bank_map[15] <= 8'd3;
+		end else if (cart_size_bs[22]) begin
 			bank_mask <= 8'b11111111;
 			bs_map <= 9'b1_0000_0000;
 		end else if (cart_size_bs[21]) begin
@@ -171,40 +213,54 @@ always_ff @(posedge clk_sys) if (pclk1) begin
 		bank_type <= 3'd0;
 	end else begin                                     // Not banked
 		if (cart_size <= 32'h2000) // A7808
-			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd1};
+			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1};
 		else if (cart_size <= 32'h4000) // A7816
-			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1};
+			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1, 3'd1, 3'd1};
 		else if (cart_size <= 32'h8000) // A7832
-			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1, 3'd1, 3'd1};
+			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1};
 		else if (cart_size <= 32'hC000) // A7848
-			hardware_map <= '{3'd0, 3'd0, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1};
+			hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1, 3'd1};
 		address_offset <= cart_size <= 32'h10000 ? 32'h10000 - cart_size : 32'd0;
 		bank_type <= 3'd2;
 	end
 
 	// Alternative hardware at $4k selector
 	if (cart_flags[2] || cart_flags[14]) begin // Supergame RAM at $4k
-		hardware_map[2] <= 3'd3;
-		hardware_map[3] <= 3'd3;
+		hardware_map[4] <= 3'd3;
+		hardware_map[5] <= 3'd3;
+		hardware_map[6] <= 3'd3;
+		hardware_map[7] <= 3'd3;
 	end else if (cart_flags[5]) begin // Supergame 8kb RAM at $6k
-		hardware_map[2] <= 3'd3;
-		hardware_map[3] <= 3'd3;
+		hardware_map[4] <= 3'd3;
+		hardware_map[5] <= 3'd3;
+		hardware_map[6] <= 3'd3;
+		hardware_map[7] <= 3'd3;
 	end else if (cart_flags[7]) begin // Mirror RAM at $4k
-		hardware_map[2] <= 3'd3;
-		hardware_map[3] <= 3'd3;
+		hardware_map[4] <= 3'd3;
+		hardware_map[5] <= 3'd3;
+		hardware_map[6] <= 3'd3;
+		hardware_map[7] <= 3'd3;
 		ram_mask[8] <= 0;
 		ram_mask[13:12] <= 2'b00;
 	end else if (cart_flags[4]) begin // Bank 6 at $4k
-		hardware_map[2] <= 3'd4;
-		hardware_map[3] <= 3'd4;
-		bank_map[2] <= 4'd6;
-		bank_map[3] <= 4'd6;
+		hardware_map[4] <= 3'd4;
+		hardware_map[5] <= 3'd4;
+		hardware_map[6] <= 3'd4;
+		hardware_map[7] <= 3'd4;
+		bank_map[4] <= 4'd6;
+		bank_map[5] <= 4'd6;
+		bank_map[6] <= 4'd6;
+		bank_map[7] <= 4'd6;
 	end
 
-	if (XCTRL1[5]) // FIXME: This is technically banked ram, but I dont want to waste the bram...
-		hardware_map[2] <= 3'd3;
-	if (XCTRL1[6])
-		hardware_map[3] <= 3'd3;
+	if (XCTRL1[5]) begin // FIXME: This is technically banked ram, but I dont want to waste the bram...
+		hardware_map[4] <= 3'd3;
+		hardware_map[5] <= 3'd3;
+	end
+	if (XCTRL1[6]) begin
+		hardware_map[6] <= 3'd3;
+		hardware_map[7] <= 3'd3;
+	end
 
 end
 
@@ -222,8 +278,8 @@ wire is_ym = (((cart_flags[11] || XCTRL1[7]) && address_in[15:1] == 15'h230) && 
 
 assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15];
 
-logic [2:0] address_index;
-assign address_index = address_in[15:13];
+logic [3:0] address_index;
+assign address_index = address_in[15:12];
 
 // Address translation
 always_comb begin
@@ -251,7 +307,17 @@ always_comb begin
 		3'd4: begin           // Banked ROM
 			case (bank_type)
 				3'd0: // SuperGame
-					rom_address = {bank_map[address_index], address_in[13:0]} | {(bankset_banks ? bs_map : 9'd0), 14'd0};
+					if (is_bankset_52k) begin
+						case (bank_map[address_index])
+							8'd0: rom_address = (bankset_banks ? 17'h0D000 : 17'h0000) + address_in[11:0];
+							8'd1: rom_address = (bankset_banks ? 17'h0E000 : 17'h1000) + address_in[13:0];
+							8'd2: rom_address = (bankset_banks ? 17'h12000 : 17'h5000) + address_in[13:0];
+							8'd3: rom_address = (bankset_banks ? 17'h16000 : 17'h9000) + address_in[13:0];
+							default: ;
+						endcase
+					end else begin
+						rom_address = {bank_map[address_index], address_in[13:0]} + {(bankset_banks ? bs_map : 9'd0), 14'd0};
+					end
 				3'd1: // Activision
 					rom_address = {1'b0, bank_map[address_index], address_in[12:0]};
 				3'd2: // No banking
@@ -261,7 +327,7 @@ always_comb begin
 				3'd4: // souper
 					rom_address = souper_addr;
 				default: ;
-		endcase
+			endcase
 		end
 		default: ;
 	endcase
