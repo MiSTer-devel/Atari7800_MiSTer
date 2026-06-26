@@ -792,6 +792,7 @@ module playfield
 	input         reflect, // Control playfield, 1 makes right half mirror image
 	input         cnt,     // center signal, high means right half
 	input         rhb,     // Reset HBlank signal
+	input         hblank,  // HBlank signal
 	input [19:0]  pfc,     // Combined playfield registers
 	output logic  pf       // Playfield graphics
 );
@@ -822,7 +823,7 @@ module playfield
 	f_cell pf_out
 	(
 		.clk        (clk),
-		.reset      (reset),
+		.reset      (reset || hblank),
 		.tick       (clkp),
 		.s_n        (~pf_3),
 		.r_n        (pf_3),
@@ -1914,6 +1915,7 @@ playfield playfield
 	.clkp       (clkp),
 	.hclk       (hclk),
 	.rhb        (rhb),
+	.hblank     (hblank_o),
 	.reflect    (wreg[CTRLPF][0]),
 	.cnt        (cnt),
 	.pfc        ({wreg[PF2], wreg[PF1], wreg[PF0][7:4]}),
