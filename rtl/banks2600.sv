@@ -144,6 +144,7 @@ module mapper_FE // SCABS
 
 	logic bank;
 	logic latch_next;
+	logic cpu_init_done;
 
 	always @(posedge clk) begin
 		if (ce) begin
@@ -152,13 +153,17 @@ module mapper_FE // SCABS
 			else
 				latch_next <= 0;
 
-			if (latch_next)
+			if (latch_next && cpu_init_done) begin
 				bank <= ~d_in[5];
+			end else if (latch_next) begin
+				cpu_init_done <= 1;
+			end
 		end
 
 		if (reset) begin
 			bank <= 0;
 			latch_next <= 0;
+			cpu_init_done <= 0;
 		end
 	end
 
