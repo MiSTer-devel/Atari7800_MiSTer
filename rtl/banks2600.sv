@@ -152,8 +152,10 @@ module mapper_FE // SCABS
 			else
 				latch_next <= 0;
 
+			// Currently known nibbles are 0xD (bank 1) and 0xF (bank 0).
+			// Unknown nibbles must set bank to 0 otherwise the 6502 post-reset routine might inferfere here.
 			if (latch_next)
-				bank <= {d_in[7:6], d_in[4]} == 3'b111 ? ~d_in[5] : 0;
+				bank <= d_in[7:4] == 4'hD ? 1 : 0;
 		end
 
 		if (reset) begin
