@@ -153,7 +153,7 @@ module mapper_FE // SCABS
 				latch_next <= 0;
 
 			if (latch_next)
-				bank <= ~d_in[5];
+				bank <= {d_in[7:6], d_in[4]} == 3'b111 ? ~d_in[5] : 0;
 		end
 
 		if (reset) begin
