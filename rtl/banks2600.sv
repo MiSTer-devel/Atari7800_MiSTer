@@ -163,7 +163,7 @@ module mapper_FE // SCABS
 			// Other FE mapper games apparently don't check the other bits and
 			// they still work consistently because those games have valid reset
 			// vector entry points on both banks, so they work just fine
-			// of what's the current value of bank here.
+			// regardless of what's the current value of bank here.
 			if (latch_next)
 				bank <= d_in[7:5] == 3'b110 ? 1 : 0;
 		end
