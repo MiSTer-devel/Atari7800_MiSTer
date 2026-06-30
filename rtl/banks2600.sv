@@ -152,10 +152,20 @@ module mapper_FE // SCABS
 			else
 				latch_next <= 0;
 
-			// Currently known nibbles are 0xD (bank 1) and 0xF (bank 0).
-			// Unknown nibbles must set bank to 0 otherwise the 6502 post-reset routine might inferfere here.
+			// Decathlon apparently checks for the other 2 additional bits
+			// (6 and 7 - all MUST be 1??) in order to start at the right
+			// bank (0) otherwise the game might crash on start.
+			// The 6502 post-reset routine spuriously triggers this banskwitch
+			// during cycle #5 and those bits might end up in an unknown state,
+			// hence we need to check them:
+			// https://www.c64-wiki.com/wiki/Reset_(Process)#Post-Reset_Cycles
+			//
+			// Other FE mapper games apparently don't check the other bits and
+			// they still work consistently because those games have valid reset
+			// vector entry points on both banks, so they work just fine
+			// of what's the current value of bank here.
 			if (latch_next)
-				bank <= d_in[7:4] == 4'hD ? 1 : 0;
+				bank <= d_in[7:5] == 3'b110 ? 1 : 0;
 		end
 
 		if (reset) begin
