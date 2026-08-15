@@ -312,6 +312,7 @@ module Atari7800(
 		.tia_hsync      (tia_hsync),
 		.tia_vsync      (tia_vsync),
 		.tia_pix_ce     (tia_pix_ce),
+		.pause          (pause),
 		.is_maria       (maria_en),
 		.pal_temp       (pal_temp),
 		.pal_load       (pal_load),
