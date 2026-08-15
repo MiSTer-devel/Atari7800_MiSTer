@@ -211,7 +211,7 @@ module Atari7800(
 	logic [3:0] maria_luma, maria_chroma;
 
 	maria maria_inst(
-		.ce             (1'b1), // Keep the master oscillator running while paused so video timing (ce_pix/HSync/VSync) continues for the OSD
+		.ce             (~pause),
 		.mclk0          (mclk0),
 		.mclk1          (mclk1),
 		.tia_clk_x2     (tia_clk_x2),
@@ -363,8 +363,8 @@ module Atari7800(
 	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + {tape_audio, 12'd0};
 	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + {tape_audio, 12'd0};
 
-	assign AUDIO_R = pause ? 16'd0 : (ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0]);
-	assign AUDIO_L = pause ? 16'd0 : (ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0]);
+	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
+	assign AUDIO_L = ext_audio ? audio_mix_r[16:1] : audio_mix_l[15:0];
 
 	logic [7:0] ar_ram_addr;
 	M6532 #(.init_7800(1)) riot_inst
@@ -390,7 +390,6 @@ module Atari7800(
 	(
 		.pclk1        (pclk1),
 		.clk_sys      (clk_sys),
-		.pause        (pause),
 		.reset        (reset),
 		.AB           (cpu_AB),
 		.DB_IN        (read_DB),
@@ -569,7 +568,6 @@ module M6502C
 (
 	input         pclk1,     // CPU clock (Phi1)
 	input         clk_sys,   // MARIA Clock
-	input         pause,     // Freeze the CPU (video timing keeps running)
 	input         reset,     // reset signal
 	input  [7:0]  DB_IN,     // data in,
 	input         IRQ_n,     // interrupt request
@@ -591,7 +589,7 @@ module M6502C
 
 		.Res_n(~reset),
 		.Clk(clk_sys),
-		.Enable(pclk1 && cpu_halt_n && ~pause),
+		.Enable(pclk1 && cpu_halt_n),
 		.Rdy(rdy_delay),
 
 		.IRQ_n(IRQ_n),
