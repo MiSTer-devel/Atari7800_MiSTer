@@ -25,6 +25,8 @@ module video_mux
 	input  logic       tia_hsync,
 	input  logic       tia_vsync,
 	input  logic       tia_pix_ce,
+
+	input  logic       pause,
  
 	input  logic       is_maria,
 	input  logic [1:0] pal_temp,
@@ -54,7 +56,12 @@ logic [23:0] out_color, nwarm_color, ncool_color, nhot_color,
 // Luma will become filtered and blend
 // Chroma will end up blending more smoothly
 
-wire pix_ce_immediate = is_maria ? maria_pix_ce : tia_pix_ce;
+wire pix_ce_normal = is_maria ? maria_pix_ce : tia_pix_ce;
+logic pix_ce_paused;
+always @(posedge clk_sys) begin
+	pix_ce_paused <= ~pix_ce_paused;
+end
+wire pix_ce_immediate = pause ? pix_ce_paused : pix_ce_normal;
 logic pix_ce_delayed;
 logic [7:0] yuv_index, old_yuv_index;
 logic [7:0][1:0] last_color;

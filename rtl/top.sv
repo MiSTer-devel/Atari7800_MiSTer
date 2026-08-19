@@ -312,6 +312,7 @@ module Atari7800(
 		.tia_hsync      (tia_hsync),
 		.tia_vsync      (tia_vsync),
 		.tia_pix_ce     (tia_pix_ce),
+		.pause          (pause),
 		.is_maria       (maria_en),
 		.pal_temp       (pal_temp),
 		.pal_load       (pal_load),
@@ -364,7 +365,7 @@ module Atari7800(
 	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + {tape_audio, 12'd0};
 
 	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
-	assign AUDIO_L = ext_audio ? audio_mix_r[16:1] : audio_mix_l[15:0];
+	assign AUDIO_L = ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0];
 
 	logic [7:0] ar_ram_addr;
 	M6532 #(.init_7800(1)) riot_inst
