@@ -823,7 +823,7 @@ module playfield
 	f_cell pf_out
 	(
 		.clk        (clk),
-		.reset      (reset || hblank),
+		.reset      (reset),
 		.tick       (clkp),
 		.s_n        (~pf_3),
 		.r_n        (pf_3),
@@ -2094,11 +2094,11 @@ always_ff @(posedge clk) begin : read_reg_block
 	end else if (oclk.level_p1 && ~vblank_o) begin
 		rreg[CXM0P][7:6]  <= (rreg[CXM0P][7:6]  | {(m0 && p1), (m0 && p0)});
 		rreg[CXM1P][7:6]  <= (rreg[CXM1P][7:6]  | {(m1 && p0), (m1 && p1)});
-		rreg[CXP0FB][7:6] <= (rreg[CXP0FB][7:6] | {(p0 && pf), (p0 && bl)});
-		rreg[CXP1FB][7:6] <= (rreg[CXP1FB][7:6] | {(p1 && pf), (p1 && bl)});
-		rreg[CXM0FB][7:6] <= (rreg[CXM0FB][7:6] | {(m0 && pf), (m0 && bl)});
-		rreg[CXM1FB][7:6] <= (rreg[CXM1FB][7:6] | {(m1 && pf), (m1 && bl)});
-		rreg[CXBLPF][7:6] <= (rreg[CXBLPF][7:6] | {(bl && pf), 1'b0});
+		rreg[CXP0FB][7:6] <= (rreg[CXP0FB][7:6] | {(~hblank_o && p0 && pf), (p0 && bl)});
+		rreg[CXP1FB][7:6] <= (rreg[CXP1FB][7:6] | {(~hblank_o && p1 && pf), (p1 && bl)});
+		rreg[CXM0FB][7:6] <= (rreg[CXM0FB][7:6] | {(~hblank_o && m0 && pf), (m0 && bl)});
+		rreg[CXM1FB][7:6] <= (rreg[CXM1FB][7:6] | {(~hblank_o && m1 && pf), (m1 && bl)});
+		rreg[CXBLPF][7:6] <= (rreg[CXBLPF][7:6] | {(~hblank_o && bl && pf), 1'b0});
 		rreg[CXPPMM][7:6] <= (rreg[CXPPMM][7:6] | {(p0 && p1), (m0 && m1)});
 	end
 
