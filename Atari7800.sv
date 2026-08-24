@@ -127,7 +127,7 @@ parameter CONF_STR = {
 	"D2P4oV,Stabilize Video,On,Off;",
 	"D2P4oF,De-comb,Off,On;",
 	"D2P4oU,Black & White,Off,On;",
-	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF;",
+	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF,JANE;",
 	"P4oN,Fix SC File Checksums,Off,On;",
 	"D2P4-;",
 	"D2P4rG,Load Tape From ADC;",

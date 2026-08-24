@@ -1235,6 +1235,49 @@ module mapper_EF
 
 endmodule
 
+module mapper_JANE
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [10:0]  ram_a,
+	output  [18:0]  rom_a
+);
+	assign flags_out = 16'd0;
+	assign d_out = 8'd0;
+	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
+	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
+	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_rw = sc ? a_in[7] : 1'd1;
+
+	logic [1:0] bank;
+
+	always @(posedge clk) begin
+		if (a_change) begin
+			case (a_in)
+				13'h1FF0: bank <= 2'd0;
+				13'h1FF1: bank <= 2'd1;
+				13'h1FF8: bank <= 2'd2;
+				13'h1FF9: bank <= 2'd3;
+				default: ;
+			endcase
+		end
+		if (reset)
+			bank <= 2'd1;
+	end
+
+	assign rom_a = {2'd0, bank, a_in[11:0]};
+
+endmodule
+
 	// AR File Format
 	// 3 2KB banks, each broken into 8 256 byte pages, for a total of 6KB.
 	// 1 Useless empty 2KB bank that has no purpose, as a placeholder for ROM space I guess.
