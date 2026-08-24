@@ -36,3 +36,9 @@ c5_pin_model_dump.txt
 *~
 *.xml
 *.cdf
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
