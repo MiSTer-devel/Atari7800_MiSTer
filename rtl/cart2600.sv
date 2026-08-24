@@ -511,4 +511,21 @@ module cart2600
 		.rom_a      (rom_addr[BANKEF])
 	);
 
+	mapper_JANE mapper_JANE
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKJANE]),
+		.flags_out  (flags_out[BANKJANE]),
+		.oe         (out_en[BANKJANE]),
+		.ram_sel    (ram_sel[BANKJANE]),
+		.ram_rw     (ram_rw[BANKJANE]),
+		.ram_a      (ram_a[BANKJANE]),
+		.rom_a      (rom_addr[BANKJANE])
+	);
+
 endmodule

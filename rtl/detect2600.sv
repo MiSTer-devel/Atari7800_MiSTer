@@ -1,7 +1,8 @@
 typedef enum bit[4:0] { 
-	BANK00, BANKF8, BANKF6, BANKFE, BANKE0, BANK3F, BANKF4, BANKP2, 
-	BANKFA, BANKCV, BANK2K, BANKUA, BANKE7, BANKF0, BANK32, BANKAR,
-	BANK3E, BANKSB, BANKWD, BANKEF, BANKDPCP, BANKCTY, BANKCDF, BANKEND
+	BANK00, BANKF8, BANKF6, BANKFE, BANKE0,   BANK3F,   BANKF4,  BANKP2,
+	BANKFA, BANKCV, BANK2K, BANKUA, BANKE7,   BANKF0,   BANK32,  BANKAR,
+	BANK3E, BANKSB, BANKWD, BANKEF, BANKJANE, BANKDPCP, BANKCTY, BANKCDF,
+	BANKEND
 } bss_type ;
 
 module detect2600
@@ -34,6 +35,7 @@ else if (hasMatchCTY && cart_size=='d32768) force_bs<=BANKCTY;
 else if (hasMatchCTY && cart_size=='d61440) force_bs<=BANKCTY; // F4 banking works for the one game that uses this
 else if (hasMatchCDF && cart_size>='d32768) force_bs<=BANKCDF;
 else if (hasMatchCV) force_bs<=BANKCV;
+else if (hasMatchJANE && cart_size=='d16384) force_bs<=BANKJANE;
 else if (hasMatchE7) force_bs<=BANKE7;
 else if (cart_size == 'h2000 && hasMatchWD ) force_bs<=BANKWD; //  8k 
 else if (cart_size == 'h2000 && hasMatchUA ) force_bs<=BANKUA; //  8k and less
@@ -471,6 +473,30 @@ match_bytes #(
 	.reset(reset),
 	.data(data),
 	.hasMatch(hasMatchE7_6)
+);
+
+//------------------------------
+// JANE detector
+//-------------------------------
+/*
+bool CartDetector::isProbablyJANE(ByteSpan image)
+{
+  static constexpr std::array<uInt8, 4> signature = { 0xad, 0xf1, 0xff, 0x60 };  // LDA $FFF1
+  return searchForBytes(image, signature);
+}
+*/
+wire hasMatchJANE;
+match_bytes #(
+	.num_bytes(8'd4),
+	.pattern({ 8'hAD, 8'hF1 , 8'hFF, 8'h60 }),
+	.needmatches(8'd1)
+	) match_bytes_JANE(
+	.addr(addr),
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.data(data),
+	.hasMatch(hasMatchJANE)
 );
 
 //------------------------------
