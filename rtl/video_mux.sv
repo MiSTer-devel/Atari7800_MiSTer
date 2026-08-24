@@ -66,9 +66,20 @@ end
 wire pix_ce_paused = is_maria ? pix_ce_paused_maria : pix_ce_paused_tia[1];
 wire pix_ce_immediate = pause ? pix_ce_paused : pix_ce_normal;
 logic pix_ce_delayed;
-logic [7:0] yuv_index, old_yuv_index;
+logic [7:0] yuv_index;
 logic [7:0][1:0] last_color;
+logic [15:0] frame_ptr;
+logic [7:0] frame_data;
 logic [3:0] tia_chroma_region;
+
+spram #(.addr_width(16), .mem_name("FBLN")) ram0
+(
+	.clock          (clk_sys),
+	.address        (frame_ptr),
+	.data           ({tia_vblank, yuv_index[7:1]}),
+	.wren           (pix_ce_immediate && ~is_maria),
+	.q              (frame_data)
+);
 
 // PAL 2600 $0x = PAL 7800 $0x
 // PAL 2600 $1x = PAL 7800 $0x
@@ -100,7 +111,7 @@ always_comb begin
 
 	yuv_index = {maria_chroma, maria_luma};
 	if (~is_maria)
-		yuv_index = ~pix_ce_immediate ? {old_yuv_index[7:1], 1'b0} : {tia_chroma_region, {tia_luma, 1'b0}};
+		yuv_index = ~pix_ce_immediate ? {frame_data[6:0], 1'b0} : {tia_chroma_region, {tia_luma, 1'b0}};
 
 	case ({is_PAL, pal_temp})
 		0: out_color = nwarm_color;
@@ -147,14 +158,17 @@ always @(posedge clk_sys) begin
 		pal_count <= 0;
 	end
 	if (pix_ce_immediate) begin
+		if (~tia_vblank)
+			frame_ptr <= frame_ptr + 1'd1;
 		old_color <= out_color;
+		old_vblank <= frame_data[7];
 	end
 
+	if (tia_vsync)
+		frame_ptr <= 0;
 	pix_ce_delayed <= pix_ce_immediate;
 	pix_ce <= pix_ce_delayed;
 	if (pix_ce_delayed) begin
-		old_vblank <= tia_vblank;
-		old_yuv_index <= yuv_index;
 		last_color <= {last_color[0], yuv_index};
 		{red, green, blue} <= (blend && ~is_maria) ? blend_color : out_color;
 		vsync <= is_maria ? maria_vsync : tia_vsync;
