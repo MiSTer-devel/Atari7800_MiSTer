@@ -341,14 +341,53 @@ always_ff @(posedge clk_sys) begin :core_sync
 		core_paused <= (status[35] && OSD_STATUS) || halted;
 end
 
-assign HDMI_FREEZE = core_paused;
+// Force the video stabilizer on while the OSD is open, but only switch at a
+// VSync boundary so its output stays coherent.
+logic tia_stab_d, vsync_d;
+
+always_ff @(posedge clk_sys) begin
+	vsync_d <= VSync;
+	if (~OSD_STATUS)
+		tia_stab_d <= status[63];
+	else if (tia_stab_d && (~vsync_d && VSync))
+		tia_stab_d <= 0;
+end
+
+// Delay the effective pause (and freeze) so the stabilizer can produce a full clean frame
+logic core_paused_eff;
+logic [19:0] pause_cnt;
+logic old_fsync;
+logic [1:0] n_edges;
+
+always_ff @(posedge clk_sys) begin :pause_delay
+    old_fsync <= freeze_sync;
+
+    if (!core_paused) begin
+        core_paused_eff <= 0;
+        pause_cnt <= 0;
+        n_edges <= 0;
+    end else if (!core_paused_eff) begin
+        if (pause_cnt < 20'd320_000) begin
+            pause_cnt <= pause_cnt + 1'd1;
+        end else if (~old_fsync && freeze_sync) begin
+            // Rising edge of freeze_sync — deterministic point in synthetic cycle.
+            // Wait for the second one; the first is spurious (cnto init artifact).
+            if (n_edges < 2)
+                n_edges <= n_edges + 1'd1;
+            else
+                core_paused_eff <= 1;
+        end
+    end
+end
+
+assign HDMI_FREEZE = core_paused_eff;
 
 Atari7800 main
 (
 	.clk_sys      (clk_sys),
 	.reset        (reset),
 	.loading      (cart_download || bios_download),
-	.pause        (core_paused),
+	.pause        (core_paused_eff),
 
 	// Video
 	.RED          (R),
@@ -408,7 +447,7 @@ Atari7800 main
 	.cpu_driver   (~status[21]),
 	.tia_f1       (tia_f1),
 	.tia_pal      (tia_pal),
-	.tia_stab     (status[63]),
+	.tia_stab     (tia_stab_d),
 
 	// RIOT
 	.PAin         (PAin),  // Direction {RA, LA, DA, UA, RB, LB, DB, UB}
