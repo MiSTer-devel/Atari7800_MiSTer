@@ -822,11 +822,18 @@ module mapper_AR
 	assign d_out = ~ram_rw ? we_byte : (adata_select ? {7'd0, audio_data} : bios_data);
 
 	// Supercharger
-	spram #(.addr_width(11), .mem_init_file("ar.mif")) ar_rom
+	spram #(
+		.addr_width(11),
+		.mem_init_file("ar.mif"),
+		.sim_init_file("rtl/ar.hex")
+	) ar_rom
 	(
 		.clock      (clk),
 		.address    (a_in[10:0]),
-		.enable     (1),
+		.enable     (1'b1),
+		.data       (8'd0),
+		.wren       (1'b0),
+		.cs         (1'b1),
 		.q          (bios_data)
 	);
 	

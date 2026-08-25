@@ -15,7 +15,7 @@ module M6532
 	input  [6:0] addr,      // Address
 	input        RW_n,      // 1 = read, 0 = write
 	input  [7:0] d_in,
-	output [7:0] d_out,
+	output logic [7:0] d_out,
 	input        RS_n,      // RAM select
 	output       IRQ_n,
 	input        CS1,       // Chip select 1, 1 = selected

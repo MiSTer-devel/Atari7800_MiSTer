@@ -1133,8 +1133,8 @@ module match_bytes
 	output reg hasMatch
 );
 
-parameter [7:0] num_bytes;
-parameter [(num_bytes*8)-1:0] pattern;
+parameter [7:0] num_bytes = 8'd1;
+parameter [(num_bytes*8)-1:0] pattern = 0;
 parameter [7:0] needmatches=8'b1;
 
 reg [(num_bytes*8)-1:0] lastPattern;

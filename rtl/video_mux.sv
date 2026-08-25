@@ -83,6 +83,7 @@ spram #(.addr_width(16), .mem_name("FBLN")) ram0
 	.address        (frame_ptr),
 	.data           ({tia_vblank, yuv_index[7:1]}),
 	.wren           (pix_ce_immediate && ~is_maria && ~pause),
+	.cs             (1'b1),
 	.q              (frame_data)
 );
 
@@ -194,79 +195,105 @@ end
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/NWARM.mif")
+	.mem_init_file("rtl/palettes/NWARM.mif"),
+	.sim_init_file("rtl/palettes/NWARM.hex")
 ) nwarm
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (nwarm_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/NCOOL.mif")
+	.mem_init_file("rtl/palettes/NCOOL.mif"),
+	.sim_init_file("rtl/palettes/NCOOL.hex")
 ) ncool
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (ncool_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/NHOT.mif")
+	.mem_init_file("rtl/palettes/NHOT.mif"),
+	.sim_init_file("rtl/palettes/NHOT.hex")
 ) nhot
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (nhot_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/PWARM.mif")
+	.mem_init_file("rtl/palettes/PWARM.mif"),
+	.sim_init_file("rtl/palettes/PWARM.hex")
 ) pwarm
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (pwarm_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/PCOOL.mif")
+	.mem_init_file("rtl/palettes/PCOOL.mif"),
+	.sim_init_file("rtl/palettes/PCOOL.hex")
 ) pcool
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (pcool_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/PHOT.mif")
+	.mem_init_file("rtl/palettes/PHOT.mif"),
+	.sim_init_file("rtl/palettes/PHOT.hex")
 ) phot
 (
 	.clock   (clk_sys),
 	.address (yuv_index),
+	.data    (24'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (phot_color)
 );
 
 spram #(
 	.addr_width(8),
 	.data_width(24),
-	.mem_init_file("rtl/palettes/PHOT.mif")
+	.mem_init_file("rtl/palettes/PHOT.mif"),
+	.sim_init_file("rtl/palettes/PHOT.hex")
 ) custom
 (
 	.clock   (clk_sys),
 	.data    ({pal_buff, pal_data}),
 	.wren    (pal_load && pal_wr && (pal_count == 2)),
 	.address (pal_load ? pal_mux_addr : yuv_index),
+	.cs      (1'b1),
 	.q       (custom_color)
 );
 
