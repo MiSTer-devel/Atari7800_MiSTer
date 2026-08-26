@@ -22,7 +22,7 @@
 
 // POKEY interrupts and the two serial/keyboard control registers.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 3, right side.
+// Source: PokeyReSchem-13.pdf page 3, right side.
 // Register semantics from the CO12294 spec.
 //
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@
 // a source held high is re-set every cycle and survives the disable/enable
 // that is the only acknowledge there is. Every set* on the sheet is a pulse
 // for that reason - setBreak reaches this row through an edge detector, not
-// from the break latch itself. See Atari7800_MiSTer-syc.17 and pokey_kbd.sv.
+// from the break latch itself. See pokey_kbd.sv.
 //
 // n1 is "enabled and pending". It gates the Cell 9 that drives the read bus,
 // which inverts, so IRQST is active low. It also gates one pull down on a

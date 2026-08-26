@@ -23,38 +23,36 @@
 // POKEY pot ports: eight pin latches, the scan counter, and the eight pot
 // value registers.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 4, left half.
-// Coordinates in the comments are 300 dpi pixels on that page, so a reviewer
-// can crop straight to them.
+// Source: PokeyReSchem-13.pdf page 4, left half.
 //
 // The pot pins are Schmitt trigger inputs, and Atari's PDF page 23 quantifies
 // what the spec only calls a "trigger voltage": V_T+ 1.9-2.6 V, V_T- 1.0-2.1 V,
 // 0.3 V hysteresis. It is modelled here as a plain inverting threshold with no
 // hysteresis, and in this core that is exact rather than approximate: the 7800
-// does not wire POKEY's pot pins at all - `rtl/cart.sv:460` and `:492` leave
-// `POT_IN` unconnected - so the pins never see an analog ramp and there is no
+// does not wire POKEY's pot pins at all - cart.sv leaves `POT_IN`
+// unconnected - so the pins never see an analog ramp and there is no
 // band for hysteresis to act in. If they are ever driven from a real RC ramp,
 // this is the line to revisit.
 //
-//   pin --+-- dump transistor to ground        (gate rail y=6513)
+//   pin --+-- dump transistor to ground
 //         |
 //         +-> Schmitt inverter -> Cell 26 -> NOR -> PotnLd -> Cell 1 Ld
 //                                             ^
 //                                          freeze
 //
-//   PotClk -> Cell 23 bit 0 (y=1457) -BOR-> bit 1 -> bit 2 -> bit 3
-//             Cell 23 bit 4 (y=2810) -BOR-> bit 5 -> bit 6 -> bit 7
+//   PotClk -> Cell 23 bit 0 -BOR-> bit 1 -> bit 2 -> bit 3
+//             Cell 23 bit 4 -BOR-> bit 5 -> bit 6 -> bit 7
 //
-// The two nibbles do not abut. Bit 4 takes a wired NOR look ahead on the
-// pulled up line at x=4975, NOR(nPotClk, Q0..Q3), which is the same term the
+// The two nibbles do not abut. Bit 4 takes a wired NOR look ahead on its own
+// pulled up line, NOR(nPotClk, Q0..Q3), which is the same term the
 // ripple would produce and is what "no borrow delay" in the cell name means.
 //
 // Cell 23 is a down counter preset to all ones, so Q counts 0,1,2,... and it
 // is Q that leaves the row: every bit's Q pin drives the D row of the eight
-// Cell 1 pot registers (x=4433), which is why POTn reads the number of scan
+// Cell 1 pot registers, which is why POTn reads the number of scan
 // ticks since POTGO.
 //
-// The scan end detector is a second pulled up line, x=4725, tapping Q for
+// The scan end detector is a second pulled up line, tapping Q for
 // bits 2,5,6,7 and Q for bits 0,1,3,4. It goes high for exactly one counter
 // value: Q = 8'hE4 = 228, the documented end of the scan.
 //
@@ -66,7 +64,7 @@
 // ---------------------------------------------------------------------------
 // Where the pin crosses into clocked logic, read off the phase marks
 // ---------------------------------------------------------------------------
-// The digit inside a gate is Atari's coupler-phase mark (die/pokey.pdf p46).
+// The digit inside a gate is Atari's coupler-phase mark (pokey.pdf page 46).
 // This half of the sheet is annotated throughout, and the marks say:
 //
 //   pad -> Schmitt -> Cell 26 -----------> NOR "1" -> PotnLd -> Cell 1 Ld
@@ -74,22 +72,19 @@
 //                     holds on O1                     no X on either)
 //
 // Cell 26 draws its two pass gates with the pin labels O1 and O2 rather than a
-// digit (page 7, -r 400 -x 16700 -y 3600 -W 2200 -H 1700): IN through the O2
-// gate onto the storage node, the two-inverter loop closed by the O1 gate.
+// digit (page 7): IN through the O2 gate onto the storage node, the two-inverter loop closed by the O1 gate.
 // So the asynchronous pin is captured on O2 and is already held when the O1
 // PotnLd gates look at it - the handoff is one phase wide and the RTL's
-// pokey_cell26 reproduces it exactly. The eight PotnLd NORs carry "1" at PDF
-// points x=331..1031, y=1270 (-r 300 -x 1250 -y 5100 -W 1900 -H 1700).
+// pokey_cell26 reproduces it exactly. The eight PotnLd NORs all carry "1".
 //
 // Two more phase readings on this sheet, both one target clock finer than what
 // is modelled below and neither observable at the pins:
 //
-//   scan stop latch   cross coupled NOR "1" / NOR "2" (x=1401, y=1243/1329),
-//                     a real two-phase set-reset pair, not the static latch
-//                     the flop below stands in for.
-//   dump              freeze -> inv "1" (x=1255,y=1386) -> NOR "2"
-//                     (x=1205,y=1558), so the pins are grounded one target
-//                     clock after freeze rises rather than with it.
+//   scan stop latch   cross coupled NOR "1" / NOR "2", a real two-phase
+//                     set-reset pair, not the static latch the flop below
+//                     stands in for.
+//   dump              freeze -> inv "1" -> NOR "2", so the pins are grounded
+//                     one target clock after freeze rises rather than with it.
 //
 // ALLPOT is read out of the pot registers themselves. Eight of the 64 cells
 // are Cell 8 rather than Cell 1 and they sit on the diagonal, bit n of POTn,
@@ -126,7 +121,7 @@ module pokey_pots (
 	// -----------------------------------------------------------------------
 	// POTGO
 	//
-	// The cross coupled NOR pair at (6403,5685)/(6755,5685) takes its feedback
+	// The cross coupled NOR pair takes its feedback
 	// after the two inverters that drive P, so it cannot hold: potPreset is a
 	// pulse that follows POTGO.
 	// -----------------------------------------------------------------------
@@ -135,8 +130,8 @@ module pokey_pots (
 	// -----------------------------------------------------------------------
 	// Scan stop latch
 	//
-	// NOR pair at (5650,5200)/(5650,5556). The lower gate's output is the
-	// freeze line that crosses the whole sheet at y=5556 and gates all eight
+	// NOR pair. The lower gate's output is the freeze line that crosses the
+	// whole sheet and gates all eight
 	// PotnLd gates; the upper gate holds its complement, which is the half
 	// kept here so a register that powers up clear means "scan stopped" and
 	// the pins stay grounded until the first POTGO.
@@ -147,12 +142,12 @@ module pokey_pots (
 	// -----------------------------------------------------------------------
 	// Pot line latches
 	//
-	// The dump transistor gates hang off the rail at y=6513 and their drains
+	// The dump transistor gates hang off a common rail and their drains
 	// are on the pins, so they are ahead of the Schmitt inverter: while they
 	// are on the latch cannot see a high whatever the outside world drives.
 	// Fast scan holds them off, which is why fast scan reads are inaccurate.
 	// -----------------------------------------------------------------------
-	wire       dump = freeze & ~fast_scan;   // NOR gate at (5158,6466)
+	wire       dump = freeze & ~fast_scan;   // a NOR on the sheet
 	wire [7:0] pin  = pot_in & {8{~dump}};
 
 	wire [7:0] line;                          // Cell 26 Q, the sampled pin
@@ -167,7 +162,7 @@ module pokey_pots (
 		end
 	endgenerate
 
-	// The eight NOR gates in the row at y=5471.
+	// The eight NOR gates in the PotnLd row.
 	wire [7:0] pot_ld = ~(line | {8{freeze}});
 
 	// -----------------------------------------------------------------------
@@ -183,7 +178,7 @@ module pokey_pots (
 
 	assign cnt_cr[0]   = pot_clk;
 	assign cnt_cr[3:1] = cnt_bor[2:0];
-	assign cnt_cr[4]   = pot_clk & ~cnt_q[0] & ~cnt_q[1]     // x=4975
+	assign cnt_cr[4]   = pot_clk & ~cnt_q[0] & ~cnt_q[1]     // look-ahead line
 	                             & ~cnt_q[2] & ~cnt_q[3];
 	assign cnt_cr[7:5] = cnt_bor[6:4];
 
@@ -200,7 +195,7 @@ module pokey_pots (
 		end
 	endgenerate
 
-	// The 228 detector on x=4725. Written as the wired NOR the sheet draws
+	// The 228 detector. Written as the wired NOR the sheet draws
 	// rather than as a compare, so the taps can be checked against it.
 	wire scan_end = ~(cnt_q_n[0] | cnt_q_n[1] | cnt_q  [2] | cnt_q_n[3] |
 	                  cnt_q_n[4] | cnt_q  [5] | cnt_q  [6] | cnt_q  [7]);
@@ -214,10 +209,9 @@ module pokey_pots (
 			scan_run <= 1'b0;
 
 	// KNOWN DIVERGENCE, not fixed. Real hardware stops at 228 on a slow scan
-	// and **229** on a fast one: ASAP's pot test saturates at $E5 in fast mode
-	// and 228 in slow
-	// (references/Pokey/implementations/asap_pfusik/test/pokey_pot.asx), and
-	// Altirra models the same split at pokey.cpp:3914-3947. This stops at 228
+	// and **229** on a fast one: ASAP's pot test (pokey_pot.asx) saturates at
+	// $E5 in fast mode and 228 in slow, and Altirra's pokey.cpp models the same
+	// split. This stops at 228
 	// in both, because the detector on the sheet is a plain 228 tap set either
 	// way and nothing in the drawn freeze path distinguishes the modes.
 	//
@@ -228,7 +222,7 @@ module pokey_pots (
 	//   - the freeze gate chain has a real propagation delay that crosses one
 	//     counter step at a machine-cycle rate and not at a scan-line rate.
 	//
-	// Both were tried. Only a delay measured in TIME can produce the split at
+	// Only a delay measured in TIME can produce the split at
 	// all - one measured in counter steps gives 229 in both modes, because the
 	// slow counter eventually takes that step too. And the time it needs is a
 	// specific number:
@@ -243,14 +237,12 @@ module pokey_pots (
 	// and picking two because one does not land is fitting to the answer.
 	//
 	// So this is where it stays until someone reads the coupler marks on the
-	// freeze line at the PotnLd row, on Cwik page 4 or Atari's page 38. That is
-	// now a single crop, not an open question. Tracked as syc.30.
+	// freeze line at the PotnLd row, on Cwik page 4 or Atari's page 38.
 	//
 	// The same sheet has a second untraced hardware behaviour: reading POTn on
 	// the cycle the counter increments returns count & (count + 1), from the
-	// bits that fall being faster than the bits that rise
-	// (references/Pokey/implementations/altirra/pokey.cpp:2426-2452). That one
-	// is analog and has no structure to copy.
+	// bits that fall being faster than the bits that rise (Altirra's
+	// pokey.cpp). That one is analog and has no structure to copy.
 	//
 	// Exposure for both is nil: the 7800 leaves POKEY's pot pins unconnected.
 
@@ -262,8 +254,7 @@ module pokey_pots (
 	// bottom from PotnLd, and the counter's Q on the D row down the right.
 	// The cell on each column's own bit is a Cell 8; the rest are Cell 1. The
 	// Cell 8's Rd pin sits on its own column's strobe like every other cell in
-	// the column - checked on the drawing at 300 dpi -x 3050 -y 1000 -W 1150
-	// -H 800, where Addr0r lands on both the Cell 1 beside it and the Cell 8.
+	// the column: Addr0r lands on both the Cell 1 beside it and the Cell 8.
 	wire [7:0] pot [8];
 	wire [7:0] cell_q  [8];          // what each cell puts on its bit line
 	wire [7:0] cell_oe [8];

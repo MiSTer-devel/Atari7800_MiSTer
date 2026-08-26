@@ -22,7 +22,7 @@
 
 // The AUD node: what the four Cell 11 DACs add up to.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 5 for the
+// Source: PokeyReSchem-13.pdf page 5 for the
 // structure, and Altirra's hardware reference manual Appendix E, "Analog Audio
 // Model", for the numbers - which are measurements taken from real hardware
 // rather than a model fitted to a datasheet.
@@ -95,7 +95,7 @@ module pokey_mixer (
 	// Appendix E's curve at every 32nd step of `raw`, scaled to 0..65535.
 	// Written as a case rather than an unpacked-array localparam because
 	// Icarus rejects the latter outright and Quartus 17.0.2's SystemVerilog
-	// support is partial - see .agents/tests/frontend-check.sh, which caught it.
+	// support is partial.
 	function automatic logic [15:0] curve(input logic [4:0] i);
 		case (i)
 			5'd0 : curve = 16'd0;

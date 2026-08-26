@@ -1,6 +1,28 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
 // MOS 6502 datapath: the four internal buses and every register hanging off
-// them. Structure from .agents/evidence/6502/datapath.md sections 1 and 2.
+// them. Structure follows the visual6502 netlist.
 //
 // Why this is worth building as the real thing rather than as an ALU with a
 // state machine around it: the awkward behaviour a 6502 core has to get right
@@ -145,7 +167,7 @@ module mos6502_dp
 	// carry flag comes from.
 	//
 	// The nybbles tested are the ACCUMULATOR's, not the AND result's. On this
-	// die the operand reaches DB in bit 0 only (netlist_divergences.md s1), so
+	// die the operand reaches DB in bit 0 only, so
 	// the two differ whenever that bit is 0 and A's low nybble is 5 or D:
 	// A=$05 with any even operand corrects on the netlist and does not under
 	// 64doc's "AND result" wording. Measured over 3072 cases - six operands

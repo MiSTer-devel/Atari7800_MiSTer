@@ -58,7 +58,7 @@
 module minnie_out #(
 	parameter int DC_SHIFT  = 8,     // at 27.965 kHz -> ~17 Hz corner
 	parameter int LP_SHIFT  = 6,     // at 1.79 MHz   -> ~4.4 kHz corner
-	parameter int OUT_SHIFT = 3      // 10 bit sample -> +/-8192 of swing
+	parameter int OUT_SHIFT = 5      // 10 bit sample -> +/-32768 of swing
 ) (
 	input  wire               clk,
 	input  wire               reset,
@@ -69,7 +69,8 @@ module minnie_out #(
 	output wire        [15:0] aud
 );
 
-	localparam signed [15:0] OUT_BIAS = 16'sd8192;
+	// 17 bits: the bias is 32768, which a signed 16 bit value cannot hold.
+	localparam signed [16:0] OUT_BIAS = 17'sd32768;
 
 	// --- DC block, at the sample rate ------------------------------------
 	wire signed [17:0] samp_wide = {sample, {DC_SHIFT{1'b0}}};
@@ -116,9 +117,16 @@ module minnie_out #(
 	wire signed [10:0] lp_out = lp_acc[16:LP_SHIFT];
 
 	// --- Scale and bias ---------------------------------------------------
-	// hp is bounded at +/-1023, so this lands inside 0..16376 and cannot
-	// underflow the unsigned mixer.
-	wire signed [15:0] scaled = 16'($signed(lp_out) <<< OUT_SHIFT);
+	// hp is bounded at +/-1023, so this lands inside 32..65504: the whole of
+	// the unsigned mixer's range, without underflowing it.
+	//
+	// That is as loud as the part can be. top.sv sums into 17 bits and
+	// halves the result whenever an external audio source is present, and it
+	// assumes one such source at a time - TIA's 32767 plus this 65504 is
+	// 98271, inside the 131071 the sum holds. A cart running POKEY and Minnie
+	// together would break that assumption, which is the same assumption
+	// top.sv already documents for covox plus YM2151.
+	wire signed [16:0] scaled = 17'($signed(lp_out) <<< OUT_SHIFT);
 
 	assign aud = 16'(scaled + OUT_BIAS);
 

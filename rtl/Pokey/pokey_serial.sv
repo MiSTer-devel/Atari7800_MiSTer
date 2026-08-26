@@ -22,7 +22,7 @@
 
 // POKEY serial port: the two shift chains, their PLAs, and the bit rate clocks.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 6, with the two
+// Source: PokeyReSchem-13.pdf page 6, with the two
 // PLA matrices on page 7 (both labelled "PAGE 5", Cwik's numbering for page 6).
 // Frame format from the CO12294 spec.
 //
@@ -65,8 +65,7 @@
 //
 // Page 6 puts a Cell 2 wired as a toggle on each of Timer4 and Timer2, so the
 // bit rate is half the timer rate - the timer has to be programmed at twice the
-// baud rate. The old behavioural code used the timer directly and was a factor
-// of two fast. Each clock then feeds a NOR against a three inverter delay,
+// baud rate. Each clock then feeds a NOR against a three inverter delay,
 // which turns the level into a narrow pulse on one edge; that is the shift
 // pulse. OCLK is an open drain pull-down off that same node, so the pin rises
 // as the pulse fires.
@@ -86,8 +85,8 @@
 //
 // The 110 in rate is the one entry Atari got wrong. Its own table says chan 2;
 // the input rate is always chan 4 or external, and the Comments column of the
-// same table agrees. Avery Lee's erratum is indexed at
-// .agents/references/pokey.md:884-885 and Watson's mode case reads chan 4 too.
+// same table agrees. Avery Lee's erratum says so too, and Watson's mode case
+// reads chan 4.
 //
 // "A" marks the asynchronous receive modes, and they are exactly the four with
 // bit 4 set, which is why bit 4 alone is the async term below. The rate mux on
@@ -228,8 +227,8 @@ module pokey_serial (
 	// =======================================================================
 	// Receive
 	// =======================================================================
-	// Phases within one received bit. Confirmed against the coupler-phase marks
-	// (-r 500 -f 6 -x 12300 -y 1450 -W 2350 -H 2950). sdiClock climbs a column
+	// Phases within one received bit, read off the coupler-phase marks on page
+	// 6. sdiClock climbs a column
 	// of inverters marked 2,1 then 2,1 - two ("2","1") coupler pairs, so two
 	// target clocks - and the three control lines are taken off it as:
 	//
@@ -301,8 +300,7 @@ module pokey_serial (
 	// -----------------------------------------------------------------------
 	// NOR-NOR array. A dot on an input's true column means the term wants that
 	// input at 0, a dot on its complement column means 1; term = NOR of its
-	// dotted columns, output = NOR of its dotted terms. Read at 600 dpi and
-	// confirmed against a second independent read of the same sheet.
+	// dotted columns, output = NOR of its dotted terms.
 	//
 	//        1 sdiStopBit   2 sdinStartBit   3 sdiQ1
 	//   T1        0                -            1
@@ -360,7 +358,7 @@ module pokey_serial (
 	// to be slightly different from the rate set by channels 3 and 4."
 	//
 	// Taken as the edge the spec describes and not, as Watson does
-	// (pokey.vhdl:1158-1161), as a level held for the whole idle stretch. The
+	// (pokey.vhdl), as a level held for the whole idle stretch. The
 	// difference matters here because this sheet has one toggle per timer, not
 	// one per direction, so a held reset would freeze the transmit clock too -
 	// and in modes 011 and 101, where both directions run off channel 4, that
@@ -423,7 +421,7 @@ module pokey_serial (
 	// the place of a shift for that bit time, and puts the start bit on the pin.
 	//
 	// The transmit sequencer is drawn as the receiver's mirror image and carries
-	// the same marks (-r 300 -f 6 -x 14500 -y 800 -W 2200 -H 3200):
+	// the same marks:
 	// ssoTransfer = NOR "2" (ssoShft, the stage before it), again a level rather
 	// than a pulse, and ssoLoad enters ssoRec on an X input - uncoupled, so a
 	// load shuts REC off in its own phase, the way ssiSet does above.
@@ -458,8 +456,8 @@ module pokey_serial (
 	// output PLA Cell 2's P pin and the sdoDloaded latch and nowhere else on
 	// this row, and Altirra's hardware-derived rule agrees: INIT resets the
 	// serial state machines and the input shift register, not the output shift
-	// register (pokey.cpp:2887-2903). So REC stands during INIT and the chain
-	// keeps whatever it held, including the level on SOD.
+	// register (pokey.cpp). So REC stands during INIT and the chain keeps
+	// whatever it held, including the level on SOD.
 	wire sso_load   = tx_seq[0] & ssoload_req;
 	wire sso_shft   = tx_seq[0] & ~ssoload_req & sdon_shft_en;
 	wire sso_transf = tx_seq[1];
@@ -467,9 +465,8 @@ module pokey_serial (
 	// labels along the row bottom read SET|Ld  Ld|Ld ... Ld|R  R, so the net
 	// enters at Cell 16's right hand R, runs through every Cell 15's Ld and ends
 	// at Cell 17's SET - the same bussed-through-the-row style as the AUDF chain.
-	// Checked at 1200 dpi, -r 1200 -f 6 -x 41500 -y 3200 -W 3000 -H 1600: nothing
-	// joins SET from below. The inverter at the right of the row drives a line
-	// that passes underneath without touching it.
+	// Nothing joins SET from below: the inverter at the right of the row drives
+	// a line that passes underneath without touching it.
 	wire sso_set    = sso_load;          // Cell 17 lays down the stop bit
 	wire sso_rec    = ~sso_shft & ~sso_load & ~sso_set & ~sso_transf;
 
@@ -554,7 +551,6 @@ module pokey_serial (
 	// the block into a NOR against Skctls_7, SKCTL bit 7 - the force break gate:
 	// ~(~sso9 | break) = sso9 & ~break. That drives the SOD pad, which is open
 	// drain and inverts twice, so the pin follows Cell 16.
-	// The NOR is at -r 600 -f 6 -x 18450 -y 8600 -W 1500 -H 800.
 	wire sod_level = force_break ? 1'b0 : sso[9];
 
 	// -----------------------------------------------------------------------
@@ -578,10 +574,10 @@ module pokey_serial (
 	//
 	// The missing gate on the channel 2 side is not an oversight in this code.
 	// Atari's own block diagram draws a symmetric switch; Avery Lee's erratum
-	// (.agents/references/pokey.md:889-895) says the drawing is wrong twice -
-	// the select polarity is backwards AND the hardware has no AND gate on the
-	// channel 2 side, so channel 2 pulses always resync. Watson reads the same
-	// (pokey.vhdl:1069-1077). Do not "fix" the asymmetry back.
+	// says the drawing is wrong twice - the select polarity is backwards AND
+	// the hardware has no AND gate on the channel 2 side, so channel 2 pulses
+	// always resync. Watson's pokey.vhdl reads the same. Do not "fix" the
+	// asymmetry back.
 	//
 	// The reset is gated by bit 3 but the toggle is not; with the substitution
 	// off the flip flop simply runs unobserved.

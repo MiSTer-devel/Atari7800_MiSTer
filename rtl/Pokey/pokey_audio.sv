@@ -23,7 +23,7 @@
 // POKEY audio: four channels, AUDCTL, STIMER, and the timer events that reach
 // the interrupt logic.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 5.
+// Source: PokeyReSchem-13.pdf page 5.
 //
 // ---------------------------------------------------------------------------
 // AUDCTL, from the CO12294 spec
@@ -141,8 +141,8 @@ module pokey_audio (
 	// arrive at the toggle. It is two 1.79 MHz cycles late, which is why a fast
 	// channel 1 in two-tone runs at AUDF + 6 where the same channel on its own
 	// runs at AUDF + 4 - Altirra measures exactly that split
-	// (TestEmu_PokeyTimers.cpp:311-317) and Watson spends a two stage delay
-	// line on it (pokey.vhdl:701-703).
+	// (TestEmu_PokeyTimers.cpp) and Watson spends a two stage delay
+	// line on it (pokey.vhdl).
 	//
 	// The stages shift on 1.79 MHz, but the toggle can come from a channel
 	// running slower than that, so the pulse is caught and held until the next

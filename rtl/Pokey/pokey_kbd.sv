@@ -23,7 +23,7 @@
 // POKEY keyboard scanner: the scan counter, the debounce comparator, KBCODE,
 // the KEYBOARD CONTROL PLA and the two key interrupt sources.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 3, left side,
+// Source: PokeyReSchem-13.pdf page 3, left side,
 // with the PLA matrix off page 7 bottom left.
 //
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@
 //
 // The counter is a BINARY DECR row, so it counts DOWN, and three inverters sit
 // between each stage's Q and its K pad, so the pins carry the complement of
-// the code that lands in KBCODE. That is why the matrix in rtl/ps2_to_pokey.v
+// the code that lands in KBCODE. That is why the matrix in ps2_to_pokey.v
 // indexes itself with ~KEYBOARD_SCAN.
 //
 // ---------------------------------------------------------------------------
@@ -165,8 +165,7 @@ module pokey_kbd (
 	// live counter. Every bit that disagrees pulls the C line down, and C is
 	// pulled up at the foot of the column, so C high means the whole word
 	// matches. debComp is the NOR of ~SKCTL0 and C. That NOR carries no digit
-	// and no X, so it is a plain static gate: the notation legend adds nothing
-	// here and Atari7800_MiSTer-syc.16 stands as filed.
+	// and no X, so it is a plain static gate.
 	// -----------------------------------------------------------------------
 	wire kb_cmp_ld;
 	wire [5:0] cmp_q, cmp_match;
@@ -292,19 +291,16 @@ module pokey_kbd (
 	//
 	// a falling edge of the node, which is the break key going down. Read as a
 	// static gate it would be NOR(A, ~A) = 0, which is nonsense; Atari's legend
-	// on references/Pokey/die/pokey.pdf page 46 is what decodes it. Traced at
-	// 600 dpi on page 3, crop -x 4100 -y 12900 -W 2700 -H 1450.
+	// on pokey.pdf page 46 is what decodes it.
 	//
 	//   BREAK pressed    node 1 -> 0    setBreak pulses for one clk
 	//   BREAK held       node stays 0   setBreak stays low
 	//   BREAK released   node 0 -> 1    nothing
 	//
-	// So setBreak is a PULSE, one per press, and not the level this used to
-	// produce. It has to be: pokey_irq's IRQST bit is a NOR pair whose set
+	// So setBreak is a PULSE, one per press, and not a level. It has to be: pokey_irq's IRQST bit is a NOR pair whose set
 	// input is level sensitive, so a source held high is re-set every cycle and
 	// survives the write of 0 to IRQEN that is POKEY's only acknowledge. A held
 	// BREAK key would have pinned IRQ low with no way to clear it.
-	// Atari7800_MiSTer-syc.17.
 	//
 	// The two inverters between preBreak and setBreak are a non-inverting
 	// buffer. They are one coupler stage each, but nothing samples setBreak on
@@ -329,8 +325,7 @@ module pokey_kbd (
 
 	// The sheet forms the keyboard overrun on its right hand side, as a NAND
 	// of setKey with the IRQST bit 6 node, which is not visible from here.
-	// pokey_irq builds it; this port stays only because pokey.sv is not ours
-	// to change.
+	// pokey_irq builds it, so this port is tied off here.
 	assign kbd_overrun = 1'b0;
 
 endmodule

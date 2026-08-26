@@ -42,3 +42,6 @@ c5_pin_model_dump.txt
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Host and credentials for the physical MiSTer - local only
+.agents/tools/mister/mister.local.conf

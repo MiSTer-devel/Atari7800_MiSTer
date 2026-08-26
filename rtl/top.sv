@@ -117,7 +117,7 @@ module Atari7800(
 	logic [7:0]     write_DB;
 	logic [7:0]     tia_DB_out, riot_DB_out, maria_DB_out, ram0_DB_out, ram1_DB_out, cart_DB_out;
 	logic [15:0]    pokey_audio_r, pokey_audio_l, ym_audio_r, ym_audio_l;
-	logic [15:0]    minnie_audio_r, minnie_audio_l;
+	logic [15:0]    minnie_audio;
 	logic           mclk0;
 	logic           mclk1;
 	logic           cs_ram0, cs_ram1, cs_tia, cs_riot, cs_maria;
@@ -364,8 +364,8 @@ module Atari7800(
 	// halved to ensure no clipping. If in the future more than two external audio devices are used
 	// at once, eg covox + ym2151 + tia, then more reduction will be needed, but for the time being
 	// that seems unlikely.
-	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio_r + {tape_audio, 12'd0};
-	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio_l + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + {tape_audio, 12'd0};
 
 	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
 	assign AUDIO_L = ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0];
@@ -482,8 +482,7 @@ module Atari7800(
 		.dout           (cart_7800_DB_out),
 		.pokey_audio_r  (pokey_audio_r),
 		.pokey_audio_l  (pokey_audio_l),
-		.minnie_audio_r (minnie_audio_r),
-		.minnie_audio_l (minnie_audio_l),
+		.minnie_audio   (minnie_audio),
 		.ym_audio_r     (ym_audio_r),
 		.ym_audio_l     (ym_audio_l),
 		.rom_address    (cart_7800_addr_out),
@@ -600,13 +599,12 @@ module M6502C
 	// steps its T-state without a new address, so the stray pulse is dropped
 	// here rather than in MARIA, where the shape of that restart is load
 	// bearing for everything else.
-	logic in_phase2;
+	logic in_phase2 = 1'b0;
 	wire  phi1_en = pclk1 & ~in_phase2;
 	wire  phi2_en = pclk0 &  in_phase2;
 
 	always_ff @(posedge clk_sys) begin
-		if (reset)        in_phase2 <= 1'b0;
-		else if (phi1_en) in_phase2 <= 1'b1;
+		if      (phi1_en) in_phase2 <= 1'b1;
 		else if (phi2_en) in_phase2 <= 1'b0;
 	end
 

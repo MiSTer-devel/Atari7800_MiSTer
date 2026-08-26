@@ -1,3 +1,25 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
 // NMOS 6502, 40-pin part, cycle accurate.
 //
@@ -9,8 +31,6 @@
 // the one documented departure from the pin contract. Everything clocked runs
 // off clk_sys and is gated by one of the two enables, so clk_sys can be as
 // fast as the system needs without changing target timing.
-//
-// Pin contract and its evidence: .agents/evidence/6502/pin_contract.md
 //============================================================================
 
 module mos6502
@@ -49,9 +69,8 @@ module mos6502
 	// ---- not pins --------------------------------------------------------
 	output logic        jammed,    // a KIL opcode has locked the part up
 
-	// Architectural state, exported so the co-simulation harness can compare
-	// against the netlist. Nothing inside the core reads these back, so they
-	// cost nothing when left unconnected.
+	// Architectural state, exported for verification and debug. Nothing inside
+	// the core reads these back, so they cost nothing when left unconnected.
 	output logic  [7:0] dbg_a, dbg_x, dbg_y, dbg_s, dbg_p, dbg_ir,
 	output logic [15:0] dbg_pc,
 	output logic  [3:0] dbg_t,

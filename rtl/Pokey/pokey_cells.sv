@@ -22,17 +22,17 @@
 
 // POKEY standard cell library.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 7, Jorge Cwik's
+// Source: PokeyReSchem-13.pdf page 7, Jorge Cwik's
 // reconstruction from the die. Atari's own sheets 35-41 in
-// references/Pokey/die/pokey.pdf use the same cell numbers, so the two can be
+// pokey.pdf use the same cell numbers, so the two can be
 // diffed against each other and against this file.
 //
 // ---------------------------------------------------------------------------
 // Atari's notation, from the original legend
 // ---------------------------------------------------------------------------
-// `references/Pokey/die/pokey.pdf` page 46 is Atari's own cell library sheet -
+// `pokey.pdf` page 46 is Atari's own cell library sheet -
 // the one Cwik redrew as his page 7 - and it carries the legend that decodes
-// two marks this project spent a long time guessing at:
+// two marks that are otherwise easy to misread:
 //
 //     A. X INDICATES NO COUPLER ON THAT INPUT.
 //     B. NUMBER INDICATES CLOCK PHASE OF INPUT COUPLERS.
@@ -145,8 +145,6 @@
 //   9   irq, poly
 //   11  chan
 //
-// This block used to say eight were wired and the rest were carried as an
-// unused transcription, which was true when it was written and had gone stale.
 // Numbers 10, 13, 14, 18 and 19 are absent from Atari's own library, so they
 // are not gaps here either.
 //
@@ -363,7 +361,7 @@ endmodule
 // Cell 7 - TRI-STATE BUS DRIVER
 // ---------------------------------------------------------------------------
 // The pad driver. Two NOR pairs drive a separate pull-up and pull-down so the
-// pad can be released. Split into value and enable per AGENTS.md rather than
+// pad can be released. Split into value and enable rather than
 // modelled with a `z`, so the parent decides what an undriven pad reads as.
 module pokey_cell7 #(
 	parameter int WIDTH = 1
@@ -771,17 +769,15 @@ endmodule
 //         |         +--NOR--> q
 //   c  -------------+
 //
-// Read off PokeyReSchem-13.pdf page 7. In v1.0 this cell was drawn ambiguously
-// enough that an earlier pass here read it as a rising edge one-shot; v1.3
-// shows plainly that `in` crosses the `c` line without connecting and that
-// there is no delay element, so there is no edge detector. It is combinational.
+// Read off PokeyReSchem-13.pdf page 7, v1.3, which shows plainly that `in`
+// crosses the `c` line without connecting and that there is no delay element.
+// So there is no edge detector here - the cell is combinational, `q = in & ~c`.
 //
-// SETTLED at 1200 dpi: `q = in & ~c`. The wire that could not be traced before
-// is the cell's bounding box edge. The NOR's second input comes off a junction
-// dot on the C line, and the wire from IN goes over the top and lands on the
-// NOR *body*, which is the pull up drive rather than a logic input - the same
-// convention Cell 7 uses. So q = NOR(~in, c) = in & ~c. Cell 22 is the same
-// gate with a super buffered copy, so the two still agree with each other.
+// The NOR's second input comes off a junction dot on the C line, and the wire
+// from IN goes over the top and lands on the NOR *body*, which is the pull up
+// drive rather than a logic input - the same convention Cell 7 uses. So
+// q = NOR(~in, c) = in & ~c. Cell 22 is the same gate with a super buffered
+// copy, so the two agree with each other.
 //
 // Numbers 10, 13, 14, 18 and 19 are absent from Atari's library too. Not gaps
 // in this transcription.

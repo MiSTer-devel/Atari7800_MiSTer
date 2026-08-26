@@ -23,7 +23,7 @@
 // Minnie's noise source: the "15 stage poly counter" of GCC-1730 section 2.1.3.
 //
 // The specification gives the length and nothing else - no taps, no clock rate,
-// no seed. Those are invented here; see .agents/references/minnie.md.
+// no seed. Those are invented here.
 //
 //   taps    x^15 + x^14 + 1, maximal length, period 32767. Two gate feedback,
 //           the same idiom POKEY uses for its 17 and 9 bit polys.

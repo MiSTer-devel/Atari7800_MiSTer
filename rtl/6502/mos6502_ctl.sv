@@ -1,3 +1,25 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
 // MOS 6502 control: predecode, the timing generator, and the per-cycle
 // datapath steering for all 256 opcodes.
@@ -5,7 +27,7 @@
 // THE ONE TIMING FACT THIS IS BUILT AROUND
 //
 // The random control logic latches its outputs on phase 2 and applies them on
-// the following phase 1 (.agents/evidence/6502/datapath.md s2.1). So the
+// the following phase 1. So the
 // control word driving cycle N was decided during phase 2 of cycle N-1. That
 // is not a detail - it is what lets an instruction finish after IR has
 // already been overwritten by the next opcode, which is how a 3-cycle
@@ -18,9 +40,8 @@
 //
 // T-STATES
 //
-// Cycle numbers here match the "#" column of
-// .agents/evidence/6502/addressing_cycles.md, so the code can be read against
-// the evidence without translating. In the silicon's own naming, t==1 is T1
+// Cycle numbers here match the "#" column of the usual addressing-mode cycle
+// tables. In the silicon's own naming, t==1 is T1
 // (SYNC, and also T+ of the instruction just finishing) and the last cycle of
 // an instruction is T0.
 //
@@ -61,13 +82,13 @@ module mos6502_ctl
 	output logic       sync,
 	output logic       jammed,
 
-	// Sequencer state, for the co-simulation harness only.
+	// Sequencer state, for verification and debug only.
 	output logic [3:0] dbg_t,
 	output logic       dbg_hold,
 	output logic       dbg_int_active,
 	output logic       dbg_res_active,
-	// The timing generator, for the harness to diff against the netlist's own
-	// nodes. Bits 0-5 T0/T1X/T2..T5, 6-7 the two extension latches, then
+	// The timing generator, exposed to diff against the netlist's own nodes.
+	// Bits 0-5 T0/T1X/T2..T5, 6-7 the two extension latches, then
 	// t_zero, end_x, res_p and the prefetch gate - the terms that decide them.
 	output logic [15:0] dbg_tg,
 	output logic       dbg_take_int
@@ -151,7 +172,7 @@ module mos6502_ctl
 
 	// ---- predecode ---------------------------------------------------------
 	// Reads the opcode straight off the pins during the fetch cycle's phase 2.
-	// The die's predecode has two jobs (datapath.md s5): suppress the PC
+	// The die's predecode has two jobs: suppress the PC
 	// increment on a one-byte instruction's second fetch, and shorten a
 	// two-cycle instruction. Only the first is needed here.
 	//
@@ -168,7 +189,7 @@ module mos6502_ctl
 
 	// Two-cycle opcodes: xxx010x1, 1xx000x0, and the implied ones except
 	// 0xx01000. The timing generator needs this to raise T0 without t_zero.
-	// predecode_logic.v:43-48.
+	// predecode_logic.v.
 	logic pd_two_cycle;
 	always_comb begin
 		logic imp, m_xxx010x1, m_1xx000x0, m_0xx01000;
@@ -238,7 +259,7 @@ module mos6502_ctl
 
 	// The vector address is not held anywhere. ADH is left entirely
 	// precharged, which is the $FF, and three ADL bits are pulled low to pick
-	// which vector - datapath.md s7.3.
+	// which vector.
 	//
 	//   NMI  $FFFA / $FFFB   bit 2 low,          bit 0 low on the first
 	//   RES  $FFFC / $FFFD   bit 1 low,          bit 0 low on the first
@@ -321,25 +342,22 @@ module mos6502_ctl
 		// (AI & BI) bit 0, still sees the operand. `ALR #$00` from A=$FF
 		// gives A=$7F with C=0 on the netlist: the result kept every bit the
 		// operand should have cleared, and the carry did not.
-		// netlist_divergences.md s1, decision 0010.
 		D_ANC: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.ands=1; end
 		D_ALR: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.srs=1; end
 		D_ARR: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.srs=1;
 		             r.arr_d = BCD_EN & p[3]; end
 		// LAS also transfers S to X, off SB on this cycle - before ADD holds
-		// the AND result. It does not write S. netlist_divergences.md s1b.
+		// the AND result. It does not write S.
 		//
 		// The page-crossing form is not modelled: the extra fix-up cycle
 		// leaves the operand only partly on the bus, so A comes out as S
 		// ANDed with something that is neither of the two bytes read.
-		// Atari7800_MiSTer-ow4.19.
 		D_LAS: begin r.s_sb=1;  r.sb_add=1; r.sb_x=1;
 		             r.dl_db=1; r.db_add=1; r.ands=1; end
-		// ANE and LXA OR a "magic constant" into A before the AND. Measured
-		// on this die with .agents/tests/verilator/cpu6502/netlist_probe.c,
-		// that constant is $00, so the OR drops out. Other parts are reported
-		// to use $EE or $FF - see undocumented.md - which is why these two
-		// are called unstable.
+		// ANE and LXA OR a "magic constant" into A before the AND. On the
+		// visual6502 die that constant is $00, so the OR drops out. Other
+		// parts are reported to use $EE or $FF, which is why these two are
+		// called unstable.
 		// ANE puts A and X on SB together and lets the bus wire-AND them,
 		// the same trick SAX uses.
 		D_ANE: begin r.ac_sb=1; r.x_sb=1; r.sb_add=1;
@@ -447,7 +465,7 @@ module mos6502_ctl
 			begin r.sb_ac=1; r.db7_n=1; r.dbz_z=1; r.arr_flags=1;
 			      r.arr_daa = BCD_EN & p[3]; wrote=1; end
 		// LAS writes A only. The netlist leaves X and S alone, against every
-		// table including perfect6502's own. netlist_divergences.md s1b.
+		// table including perfect6502's own.
 		D_LAS:
 			begin r.sb_ac=1; r.db7_n=1; r.dbz_z=1; wrote=1; end
 		D_ANE:
@@ -553,8 +571,8 @@ module mos6502_ctl
 	// byte is only overwritten when the index actually carried; without a
 	// carry the address is the ordinary base + index and ABH still holds H.
 	//
-	// A stall on the fix-up cycle changes both halves on the die - see
-	// netlist_divergences.md s4 - and is not modelled here.
+	// A stall on the fix-up cycle changes both halves on the die, and is not
+	// modelled here.
 	function automatic ctl_t store_sh(input storesrc_e k, input logic crossed);
 		ctl_t r = store_out(k);
 		r.wr = 1'b1;
@@ -563,8 +581,7 @@ module mos6502_ctl
 	endfunction
 
 	// ---- the addressing sequence, cycle by cycle ---------------------------
-	// Cycle numbers are the "#" column of
-	// .agents/evidence/6502/addressing_cycles.md.
+	// Cycle numbers are the "#" column of the addressing-mode cycle tables.
 
 	function automatic ctl_t seq(input decode_t o, input logic [3:0] n,
 	                             input logic idx_crossed);
@@ -855,8 +872,6 @@ module mos6502_ctl
 	// the same cycle disagree, and a cycle that formed its address held but
 	// stepped its T-state anyway loses that address. Centipede lost the ADL
 	// fetch of a JSR that way, every time a WSYNC stall ended on one.
-	// `--pin-late` in the co-simulation harness moves the pin edges into the
-	// cycle and is the netlist check on this.
 	logic hold, wr_q, sync_q, rdy_q;
 	wire  rdy_cy = phi1_en ? rdy : rdy_q;   // new value at the edge, held after
 	assign hold = ~rdy_cy & ~wr_q;
@@ -1012,8 +1027,8 @@ module mos6502_ctl
 	// state that decides how RES lands is this chain, because it holds
 	// combinations `t` cannot: T0 together with T2 on a two-cycle instruction,
 	// T0 together with T1X while RES is recognised, and empty on the sixth
-	// cycle of a seven-cycle one. Measured off the netlist with
-	// `.agents/tools/netlist-probe/probe`, not read off the schematic.
+	// cycle of a seven-cycle one. Measured off the netlist, not read off the
+	// schematic.
 	//
 	//   tg[0] T0    the last cycle of an instruction
 	//   tg[1] T1X   the cycle after T0, which is the opcode fetch
@@ -1033,7 +1048,7 @@ module mos6502_ctl
 	// every opcode fetch, and on T0 of anything longer than two cycles. A
 	// two-cycle instruction's T0 comes from `tz_pre_n` instead, which is why
 	// t_zero is low there - the netlist says so, the schematic reading does
-	// not. random_control_logic.v:115,176-186.
+	// not. klynch71's random_control_logic.v agrees.
 	logic tz_pre_n, t_zero;
 	assign tz_pre_n = ~pd_two_cycle;
 
@@ -1041,7 +1056,7 @@ module mos6502_ctl
 	// two-cycle instruction has no end_x - its T0 comes from `tz_pre_n` - and
 	// neither does a branch that is not taken, which has no T0 at all and
 	// reaches the next fetch straight off its T2. A taken branch's T3 raises it
-	// even though that cycle is already the last. random_control_logic.v:169-172.
+	// even though that cycle is already the last. random_control_logic.v.
 	// The index add's carry has to come from before the latch on the cycle that
 	// runs it: `pgx` is still the previous cycle's there, exactly as it is for
 	// the fix-up decision itself.
@@ -1064,7 +1079,7 @@ module mos6502_ctl
 
 	// The RMW read and the dummy write after it are where the die sets its two
 	// chain extension latches, which is how a six-stage chain carries an eight
-	// cycle instruction. timing_generator.v, and random_control_logic.v:145-170.
+	// cycle instruction. timing_generator.v, and random_control_logic.v.
 	logic [3:0] rmw_rd;
 	always_comb begin
 		unique case (d.mode)
@@ -1151,7 +1166,7 @@ module mos6502_ctl
 			// read. The die's `<RES low>FD`: this fetch takes ADL from the
 			// vector HIGH address, still driven by zero_adl, and ADH from the
 			// byte the merged cycle did read. PC follows both, as it always
-			// does out of a vector. interrupts_reset_bcd.md s1.7.
+			// does out of a vector.
 			if (vec_merge) begin
 				nc = addr_vector(1'b1);
 				nc.dl_adh  = 1'b1;
@@ -1207,8 +1222,7 @@ module mos6502_ctl
 	// the moment phase 2 ends. Reading the pin at the poll instead skips the
 	// whole chain: an edge placed inside phase 1 is then taken an instruction
 	// early, and a level that has risen again by the poll is lost even though
-	// stage 1 still holds it. klynch71's interrupt_and_reset_control.v, and
-	// .agents/evidence/6502/interrupts_reset_bcd.md s1.1.
+	// stage 1 still holds it. klynch71's interrupt_and_reset_control.v.
 	//
 	// None of these latches is reset. They have none on the die, and that is
 	// what stops an NMI still held low across reset release from looking like a
@@ -1229,7 +1243,7 @@ module mos6502_ctl
 
 	// RES stage 1. It does not stop the timing generator by itself - it raises
 	// `t_zero`, which pins the chain at T0, and it blocks the prefetch path,
-	// which keeps SYNC down. interrupts_reset_bcd.md s1.1.
+	// which keeps SYNC down.
 	//
 	// Power-up value is "reset recognised": a part comes out of the box with RES
 	// held, and the die's settled state then already has the chain pulled. It
@@ -1253,7 +1267,7 @@ module mos6502_ctl
 	// hijack impossible while still leaving T5 phase 1 open to a full one.
 	// `brk_done` is the only thing that clears NMI stage 1, and it lands a
 	// cycle before the sequence's own last, so the line is free again by the
-	// handler's first fetch. interrupts_reset_bcd.md s1.7, s1.8.
+	// handler's first fetch.
 	// RES reaching T0 while the BRK sequence is still fetching its vector. The
 	// chain merges that cycle with T0, which is how the die loses the vector
 	// high byte entirely.
@@ -1326,15 +1340,13 @@ module mos6502_ctl
 	// without crossing a page never reaches T0 at all. That is what makes a
 	// taken branch delay interrupt recognition by one instruction. A
 	// page-crossing branch does reach its last cycle, so it polls again
-	// there. .agents/evidence/6502/datapath.md s4.3, and the branch section
-	// of interrupts_reset_bcd.md.
+	// there.
 	assign poll_now = (d.mode == M_REL) ? (t == 4'd2 || t == 4'd4) : last;
 
 	// The hijack falls straight out of `addr_vector` reading the request live:
 	// an NMI that arrives any time before the vector address is formed steals
 	// it from a BRK or an IRQ, and nothing else about the sequence changes - a
 	// hijacked BRK still pushes B set and still advances PC by two.
-	// interrupts_reset_bcd.md s2.
 
 	// The poll result is held until the instruction actually ends.
 	//

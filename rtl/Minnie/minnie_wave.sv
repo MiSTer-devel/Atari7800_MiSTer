@@ -32,7 +32,7 @@
 //
 // The memory powers up holding the same two waveforms the mask would have, so a
 // program that never touches WAVEADDR/WAVEDATA behaves exactly like the
-// documented chip. See .agents/plans/PLAN_minnie_fpga.md section 5.6.
+// documented chip.
 //
 // ---------------------------------------------------------------------------
 // Waveform select, section 2.2.1.4.2

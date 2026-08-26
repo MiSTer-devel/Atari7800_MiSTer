@@ -23,7 +23,7 @@
 // One POKEY audio channel: AUDF divider, AUDC control, noise select, the
 // optional high pass, and the Cell 11 volume DAC.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 5.
+// Source: PokeyReSchem-13.pdf page 5.
 //
 // ---------------------------------------------------------------------------
 // The chain, as drawn
@@ -80,7 +80,7 @@ module pokey_chan (
 	// way back the counter still reloads, but the pulse it produced must not
 	// reach anything downstream - not the interrupt, not the waveform, not a
 	// 16 bit partner. Watson makes exactly this split between audfN_pulse_raw
-	// and audfN_pulse (pokey.vhdl:690-699).
+	// and audfN_pulse (pokey.vhdl).
 	input  wire       pulse_mask,
 
 	// Extra 1.79 MHz cycles the reload path costs. Atari's modified formula:
@@ -207,10 +207,10 @@ module pokey_chan (
 	// The counter crossing zero is this channel's timer event and the tick the
 	// waveform logic runs on.
 	//
-	// Page 5 puts two clocked gates between bit 7's nBOR and the Timer n net
-	// (150 dpi crop 3550,250-5100,1500): a NOR marked "2", with reload12 on its
-	// uncoupled X input, then an inverter marked "1" driving the keeper pair.
-	// Atari's legend on references/Pokey/die/pokey.pdf page 46 says those digits
+	// Page 5 puts two clocked gates between bit 7's nBOR and the Timer n net: a
+	// NOR marked "2", with reload12 on its uncoupled X input, then an inverter
+	// marked "1" driving the keeper pair.
+	// Atari's legend on pokey.pdf page 46 says those digits
 	// are coupler clock phases, so the pair is one whole target clock, o2 then
 	// o1. It is collapsed here on purpose. The reload branch off that same node
 	// is the only place the delay is observable, and it is already carried by
@@ -323,17 +323,14 @@ module pokey_chan (
 	//
 	//   rstAudPhase is active HIGH. Addr9w sets the STIMER NOR latch, whose
 	//   output falls, and reaches rstAudPhase through inverter "2", inverter "1"
-	//   and one more inverter "2" - an odd count (300 dpi crop 9100,17700 and
-	//   600 dpi crop 19100,17700 on page 5).
+	//   and one more inverter "2" - an odd count, all on page 5.
 	//   Cell 11's IN is active high: page 7 draws its bottom gate as
-	//   NOR(VOL ONLY, IN) onto the line that gates every volume transistor
-	//   (300 dpi crops 3500,5300 and 3500,6700 on page 7).
+	//   NOR(VOL ONLY, IN) onto the line that gates every volume transistor.
 	//   Cell 2's P must set, or channels 1 and 2 would not differ from 3 and 4
 	//   at all.
 	//
 	// So the sheet says 3 and 4 present a one and 1 and 2 a zero. Closing that
-	// needs Atari's own sheets in references/Pokey/die/ or a 7800 measurement,
-	// not page 5. See Atari7800_MiSTer-syc.21.
+	// needs Atari's own die sheets or a 7800 measurement, not page 5.
 	logic wave_q;
 
 	always_ff @(posedge clk)

@@ -5,7 +5,7 @@ ADDRESS_RADIX=HEX;
 DATA_RADIX=HEX;
 
 -- Minnie default waveforms - generated, do not edit.
--- .agents/tools/minnie-wavegen/minnie_wavegen.py
+-- minnie_wavegen.py
 -- 00-3F waveform 0, sine.  40-7F waveform 1, hollow reed.
 
 CONTENT BEGIN

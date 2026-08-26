@@ -22,10 +22,9 @@
 
 // POKEY bus interface: pads, address decode, read and write strobes.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 2, traced at
-// 300-1200 dpi. Page 2 instantiates only two library cells - Cell 7 on each
-// data pad and the Cell 21 / Cell 22 write drivers - and draws everything
-// else as gates, pass transistors and two NOR planes.
+// Source: PokeyReSchem-13.pdf page 2. It instantiates only two library cells
+// - Cell 7 on each data pad and the Cell 21 / Cell 22 write drivers - and
+// draws everything else as gates, pass transistors and two NOR planes.
 //
 // ---------------------------------------------------------------------------
 // The sheet, left to right
@@ -65,7 +64,7 @@
 // bit n of r is 0 and nAn where it is 1, so the row is left high only when
 // every tapped line is low - an address match. Confirmed on the bA3 column:
 // only the eight rows 7..0 mark it, which is exactly the addresses with
-// A3 = 0 (300 dpi -x 4600 -y 560 -W 900 -H 4600).
+// A3 = 0.
 //
 // ---------------------------------------------------------------------------
 // Phases: what qualifies a read and what qualifies a write
@@ -80,7 +79,7 @@
 //
 // So everything below rests on the two clock rails and the pass gates sitting
 // on them, not on a phase mark, and that is the whole evidence there is here.
-// Atari's own bus sheet in references/Pokey/die/pokey.pdf is the cross-check
+// Atari's own bus sheet in pokey.pdf is the cross-check
 // nobody has done yet.
 //
 // PreS01 is high across the o1 half (PHI2 low), Phi2B across the o2 half.
@@ -99,17 +98,14 @@
 // as they stood when Phi2B fell, and nothing the pads do afterwards can reach
 // it.
 //
-// Either way this corrects the previous behavioural version, which sampled
-// address and write data on PreS01 and made the write happen while Phi2B was
-// high. Only the A0-A3 pads are sampled on PreS01; the write data pass gate is
-// on Phi2B - the circle where each D*w line crosses the Phi2B column
-// (300 dpi -x 1200 -y 8400 -W 1400 -H 700).
+// Only the A0-A3 pads are sampled on PreS01; the write data pass gate is on
+// Phi2B - the circle where each D*w line crosses the Phi2B column.
 //
 // ---------------------------------------------------------------------------
 // Chip select
 // ---------------------------------------------------------------------------
-// Now read off the sheet rather than taken from the pin list. Two three input
-// NORs at the bottom centre (600 dpi -x 8300 -y 21200 -W 1300 -H 1300):
+// Read off the sheet rather than taken from the pin list. Two three input
+// NORs at the bottom centre:
 //
 //   csRd  = ~(~RW | CS0 | ~CS1) = RW & ~CS0 & CS1
 //   csWr  = ~(~RW & ~CS0 & CS1)                     active low
@@ -209,9 +205,9 @@ module pokey_bus (
 	// strobe is live for the o2 half.
 	//
 	// Not qualified by chip select, and that is the sheet: the read plane has
-	// no csWr style column and the ground device is gated by raw PreS01
-	// (600 dpi -x 14800 -y 400 -W 2200 -H 3400), so a read strobe fires on
-	// whatever A0-A3 happen to be, selected or not, and on a write too.
+	// no csWr style column and the ground device is gated by raw PreS01, so a
+	// read strobe fires on whatever A0-A3 happen to be, selected or not, and
+	// on a write too.
 	//
 	// Nothing observable comes of that. Reads have no side effects anywhere -
 	// page 3's KBCODE strobe reaches nothing but a Cell 1 read enable, and page
@@ -250,15 +246,13 @@ module pokey_bus (
 	// The pass gate is a transparent latch, open across the o2 half and holding
 	// the pad value into the o1 half where the write strobes fire. That is the
 	// house pattern for this whole library - a plain register gated by the
-	// level, per .agents/skills/two-phase-latch-modelling - not a fabric latch
-	// and not a flip flop clocked once a cycle.
+	// level - not a fabric latch and not a flip flop clocked once a cycle.
 	//
-	// It used to be left combinational, on the argument that a caller holding
-	// the pads for the whole POKEY clock cannot tell the difference. That is
-	// true of this core's adapter and not true of the pin contract this module
-	// advertises: with the gate open the whole o2 half, whatever the pads move
-	// to afterwards would have changed or cancelled the write. Now it cannot.
-	// Same for the row pass gates below.
+	// Leaving it combinational would satisfy this core's adapter, which holds
+	// the pads for the whole POKEY clock, but not the pin contract this module
+	// advertises: with the gate open across the o2 half, whatever the pads move
+	// to afterwards would change or cancel the write. Same for the row pass
+	// gates below.
 	// -----------------------------------------------------------------------
 	// Phi2B and PreS01 are drawn non-overlapping, but this model's Phi2B is
 	// cleared BY ph1_en, so it is still high for the one clk that starts o1.

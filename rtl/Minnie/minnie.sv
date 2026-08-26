@@ -23,11 +23,8 @@
 // Minnie - GCC 1730, the in-cart sound chip GCC designed for the 7800 in 1984
 // and never shipped.
 //
-// Sources: references/Minnie/, transcribed in the two *_TRANSCRIPT.txt files
-// beside the scans. Contents index, derived numbers and the specifications'
-// own contradictions are in .agents/references/minnie.md. The reconstruction
-// this implements is .agents/plans/PLAN_minnie_fpga.md, and the architecture
-// choice is .agents/decisions/0012-minnie-fpga-architecture.md.
+// Sources: GCC's own Minnie specifications, section numbers throughout these
+// files refer to them.
 //
 // ---------------------------------------------------------------------------
 // This chip never existed, so parts of it are invented
@@ -38,10 +35,9 @@
 // any of it, so nothing in this file should ever be described as accurate -
 // only as consistent with the specification.
 //
-// Two deliberate departures from the documented part, both reasoned in the
-// plan: the waveform memory is writable rather than mask ROM (section 5.6),
-// and the noise added to the index is signed rather than unsigned (see
-// minnie_datapath.sv).
+// Two deliberate departures from the documented part: the waveform memory is
+// writable rather than mask ROM (see minnie_wave.sv), and the noise added to
+// the index is signed rather than unsigned (see minnie_datapath.sv).
 //
 // ---------------------------------------------------------------------------
 // Pin contract
@@ -53,10 +49,11 @@
 //
 // Here the region decode is the cartridge's job and this takes a plain chip
 // select, which is why the window can move without touching the chip. The
-// bidirectional data bus is split into value and enable per AGENTS.md.
+// bidirectional data bus is split into separate value and enable ports,
+// because an FPGA boundary has no `z`.
 //
 // Clocking: the real part has one clock pin, PCK2, and makes two phases from
-// it. This takes both phase enables instead, like rtl/Pokey/pokey.sv.
+// it. This takes both phase enables instead, like pokey.sv.
 // ph1_en advances the microcode; ph2_en is when the processor bus is valid.
 // One microcode state per processor clock, so 64 states per sample - not one
 // per phase, which would halve the sample rate.

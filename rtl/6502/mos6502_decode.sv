@@ -1,13 +1,31 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
-// Opcode attribute decode. GENERATED - do not edit by hand.
-//
-//   source:    .agents/evidence/6502/opcodes.csv
-//   generator: .agents/tools/gen6502/gen_decode.py
-//
-// Regenerate with:  python3 .agents/tools/gen6502/gen_decode.py
+// Opcode attribute decode. GENERATED from opcodes.csv by gen_decode.py -
+// do not edit by hand.
 //
 // This is the table the real chip keeps in its decode PLA. It is generated
-// from the evidence file so the two cannot drift, and so a transcription slip
+// from the opcode table so the two cannot drift, and so a transcription slip
 // across 256 rows is not possible.
 //============================================================================
 
@@ -19,10 +37,9 @@ module mos6502_decode
 );
 
 	// The table builds a plain vector and the struct is that vector reread.
-	// Assigning the struct directly is the same hardware, and it is what this
-	// generated file used to emit, but Quartus 17's Verilog elaborator crashes
-	// trying to extract a ROM from a 256 way case whose target is a packed
-	// struct - "Can't extract a ROM based on this value", VRFX
+	// Assigning the struct directly is the same hardware, but Quartus 17's
+	// Verilog elaborator crashes trying to extract a ROM from a 256 way case
+	// whose target is a packed struct - "Can't extract a ROM based on this value", VRFX
 	// verivalue_elab.cpp:3273. A vector target elaborates.
 	logic [$bits(decode_t)-1:0] dv;
 

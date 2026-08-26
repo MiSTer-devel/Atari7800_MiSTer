@@ -22,15 +22,15 @@
 
 // POKEY C012294 - top level.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf, all sheets.
-// Register semantics from references/Pokey/die/pokey.pdf (Atari CO12294 Rev B).
+// Source: PokeyReSchem-13.pdf, all sheets.
+// Register semantics from Atari's die sheets, pokey.pdf (CO12294 Rev B).
 //
 // ---------------------------------------------------------------------------
 // Pin contract
 // ---------------------------------------------------------------------------
-// The port list is the real 40 pin part, not the convenience ports the VHDL
-// this replaces exposed. Bidirectional and open drain pins are split into
-// value and enable per AGENTS.md, because an FPGA boundary has no `z`:
+// The port list is the real 40 pin part, not a convenience subset.
+// Bidirectional and open drain pins are split into separate value and enable
+// ports, because an FPGA boundary has no `z`:
 //
 //   D0-D7  ->  d_in, d_out, d_oe
 //   IRQ    ->  irq_n_out, irq_oe     (open drain, only ever pulls low)
@@ -43,7 +43,7 @@
 // for why. They must never be high in the same clk cycle.
 //
 // AUD is analog on the real part: four Cell 11 DACs steer current into one pin.
-// Both forms are exposed, per decision 0002 - the four per-channel drives, and
+// Both forms are exposed - the four per-channel drives, and
 // a mixed value from pokey_mixer. The host picks.
 //
 // ---------------------------------------------------------------------------

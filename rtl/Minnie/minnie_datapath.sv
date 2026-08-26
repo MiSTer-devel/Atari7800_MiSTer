@@ -72,8 +72,7 @@
 // Section 2.1.3 says it should: the shifter has an input multiplexer whose two
 // sources are the waveform data path and the poly counter, a 3-bit shift
 // control, and an output on the Ybus, and figure 2.0.1 draws the same thing.
-// That route was built and measured, and it cannot work. The record is
-// .agents/decisions/0020-minnie-noise-cannot-use-the-shared-shifter.md.
+// That route cannot work.
 //
 // The shifter hands over one byte. To reach the sixteen bits section 2.2.1.4.1
 // names, that byte has to land in the high half of the index, which makes the

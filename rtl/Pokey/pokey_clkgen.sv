@@ -22,7 +22,7 @@
 
 // POKEY clock phase generation.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 7, bottom centre.
+// Source: PokeyReSchem-13.pdf page 7, bottom centre.
 // On the die the PHI2 pad feeds an inverter chain that produces two
 // non-overlapping phases o1 and o2, plus the buffered Phi2B and the PreS01
 // precharge strobe that the read bus uses.
@@ -39,7 +39,7 @@
 // ---------------------------------------------------------------------------
 // The real part has one PHI2 pin and derives both phases inside. This module
 // takes both phase enables from outside instead. The reason is that the host
-// already has them: rtl/cart.sv runs POKEY from pclk0 and pclk1, which are the
+// already has them: cart.sv runs POKEY from pclk0 and pclk1, which are the
 // two halves of the same 1.79 MHz clock the real PHI2 pin carries. Rebuilding
 // o1 and o2 from a single strobe would mean guessing a delay in clk_sys
 // cycles and would add skew that the real chip does not have.
@@ -84,12 +84,11 @@ module pokey_clkgen (
 	// A0-A3 pass gates, the pull-down that grounds every read strobe, and the
 	// Cell 7 DISABLE. So the data pads drive for the o2 half and no longer.
 	//
-	// It was a one-cycle strobe until now, which left the pads live for the
-	// rest of o1 as well. Nothing observable followed - reads have no side
-	// effects anywhere - but it is not what the sheet draws, and three
-	// testbenches had quietly come to depend on it by sampling the pads in the
-	// gap between the phases. Their `bus_read` now samples after the o2 strobe,
-	// which is where the die drives.
+	// The strobe covers the whole o2 half rather than just its first cycle. A
+	// one-cycle strobe would leave the pads live into o1, which is not what the
+	// sheet draws - nothing observable follows, since reads have no side
+	// effects anywhere, but a reader sampling in the gap between the phases
+	// would still see them driven.
 	logic pre_s01_q;
 
 	always_ff @(posedge clk)

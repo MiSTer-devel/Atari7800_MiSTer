@@ -1,3 +1,25 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
 // SALLY - Atari's 6502C, the CPU in the 5200 and the 7800.
 //
@@ -7,14 +29,14 @@
 // WHERE THIS CIRCUIT CAME FROM
 //
 // Atari built this same function out of discrete parts on the 400/800 CPU
-// board. references/CPU/HALT circuit.png, Figure 2-12: ANTIC's /HALT goes
+// board. HALT circuit.png, Figure 2-12: ANTIC's /HALT goes
 // through a 74LS02 pair (Z301A/B) into a 7474 (Z302A/B) clocked off the phi
 // pair, whose output enables two 74LS244 octal buffers (Z303, Z304) sitting
 // between the CPU's address pins and the system bus - while the CPU itself is
 // stalled through its ordinary RDY pin.
 //
 // For the 5200 and 7800 they folded all of that onto the CPU die. Tracing
-// references/7800/Schematic_Atari7800_NTSC_4000.jpg shows the 7800 board has
+// Schematic_Atari7800_NTSC_4000.jpg shows the 7800 board has
 // none of those parts: SALLY's A0-A15 and D0-D7 go straight onto the bus,
 // HALT arrives from MARIA pin 40 with only a 4k7 pull-up (R63), and MARIA
 // drives RDY on a separate pin. So this module is on-die logic, not board
@@ -31,7 +53,7 @@
 //   addr_oe ~~~~~~~~~~~~~~~~~~~~~\____________________________________/~~~
 //                                 ^ the bus is MARIA's from the start of N+2
 //
-// Measured from references/Logic/capture-range.sr (16 MHz, 19424 samples):
+// Measured from capture-range.sr (16 MHz, 19424 samples):
 // the CPU clock is 558.8 ns (1.7896 MHz); /HALT is low for exactly 36 samples
 // = 2.250 us = 4.03 CPU cycles on all three pulses in the capture; and every
 // /HALT edge lands ~70 ns after phi2 falls, giving ~315 ns of setup before
@@ -40,10 +62,8 @@
 //
 // The two cycles of latency in and out are NOT measured - the capture probed
 // only SYNC, BLANK, /HALT and PCLK2, so it cannot see the bus change hands.
-// Two cycles is what rtl/Maria/DMA.sv:169-178 and rtl/souper.v:116-118
-// independently assume, and moving that edge breaks both. Treat it as fitted,
-// not established: see the "still unknown" list in
-// .agents/evidence/6502/pin_contract.md.
+// Two cycles is what DMA.sv and souper.v independently assume, and moving
+// that edge breaks both. Treat it as fitted, not established.
 //
 // THE TWO PATHS
 //
@@ -52,20 +72,19 @@
 // buffers. SALLY cannot copy that split: MARIA has no RDY of its own to spare
 // and RDY holds a read but never a write, so a read-modify-write straddling
 // the boundary writes into a bus MARIA already owns. HALT here therefore takes
-// the core's phase enables away instead - decision 0011, and the comment on
-// `bus_off` below.
+// the core's phase enables away instead - see the comment on `bus_off`
+// below.
 //
 // The consequence is the handover phase. `halt_s`/`halt_bus` move on phi2_en,
 // so the bus and the core's phase enables change hands together at the start
 // of phase 2, never at the cycle boundary. A cycle whose phase 1 was SALLY's
 // simply stops there and finishes its phase 2 when the bus comes back, so no
 // half cycle of core activity ever happens off the bus. That coupling is the
-// contract; `sally.cpp` checks both halves of it.
+// contract.
 //
 // Nothing states this outright for SALLY - there is no die shot, and the
 // existing logic capture has no address, R/W or output-enable channel - so the
-// handover edge is fitted, not measured: see the "still unknown" list in
-// .agents/evidence/6502/pin_contract.md.
+// handover edge is fitted, not measured.
 //============================================================================
 
 module sally (
@@ -99,9 +118,8 @@ module sally (
 	                                // so the two cannot disagree.
 	output logic        jammed,
 
-	// Debug only, passed straight through from the core so the wrapper can go
-	// under the same co-simulation harness. Nothing on the board has anything
-	// like these.
+	// Debug only, passed straight through from the core. Nothing on the board
+	// has anything like these.
 	output logic  [7:0] dbg_a, dbg_x, dbg_y, dbg_s, dbg_p, dbg_ir,
 	output logic [15:0] dbg_pc
 );
@@ -132,7 +150,7 @@ module sally (
 	//
 	// Cycles 0 and 1 are still ours, which is what the flip-flop pair is for:
 	// a write already under way reaches the bus. MARIA takes over on cycle 2,
-	// which is what rtl/Maria/DMA.sv means by "ultimately it takes 2 cpu
+	// which is what DMA.sv means by "ultimately it takes 2 cpu
 	// cycles to start up", and hands it back on m. Measured on the whole-core
 	// model, MARIA drives the address bus over cycles 2..3 of a four cycle
 	// halt, so both margins are clear.
@@ -168,8 +186,7 @@ module sally (
 	// Pin 39 is the system clock: it feeds MARIA pin 6 and everything after
 	// it, so it keeps running through a halt even though the core inside does
 	// not. Tracked from the ungated enables for that reason - the core's own
-	// phase outputs freeze with it. pin_contract.md, "phi1_out / phi2_out keep
-	// running while halted".
+	// phase outputs freeze with it.
 	logic phase2;
 	always_ff @(posedge clk_sys) begin
 		if      (phi1_en) phase2 <= 1'b0;

@@ -1,10 +1,31 @@
+// k7800 (c) by Jamie Blanks
+//
+// Copyright (c) 2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 //============================================================================
 // The 6502's datapath control lines, as one bundle.
 //
-// These are the real lines the random control logic drives, named as
-// .agents/evidence/6502/datapath.md section 1.1 names them (Hanson's names,
-// with the visual6502 dpc* node in the comment where it helps). Keeping the
-// silicon's names means the decode can be checked against the evidence line
+// These are the real lines the random control logic drives, under Hanson's
+// names, with the visual6502 dpc* node in the comment where it helps. Keeping
+// the silicon's names means the decode can be checked against the netlist line
 // by line instead of by guessing what a made-up name meant.
 //
 // T-state naming, since the sources collide on it: this core uses the
@@ -16,8 +37,8 @@
 package mos6502_pkg;
 
 	// ---- instruction attributes -------------------------------------------
-	// The vocabulary is the one .agents/evidence/6502/opcodes.md fixes, so a
-	// row of opcodes.csv maps onto these names without translation.
+	// One name per addressing mode and access type, matching the opcode table
+	// mos6502_decode.sv is generated from.
 
 	typedef enum logic [4:0] {
 		M_IMP, M_ACC, M_IMM, M_ZP,  M_ZPX, M_ZPY, M_ABS, M_ABX,

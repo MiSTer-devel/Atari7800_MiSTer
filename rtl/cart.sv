@@ -38,8 +38,7 @@ module cart
 	output logic        cart_read,
 	output logic [15:0] pokey_audio_r,
 	output logic [15:0] pokey_audio_l,
-	output logic [15:0] minnie_audio_r,
-	output logic [15:0] minnie_audio_l,
+	output logic [15:0] minnie_audio,
 	output logic [15:0] ym_audio_r,
 	output logic [15:0] ym_audio_l,
 	output logic [15:0] covox_r,
@@ -283,9 +282,8 @@ wire is_ym = (((cart_flags[11] || XCTRL1[7]) && address_in[15:1] == 15'h230) && 
 
 // Minnie, GCC 1730. 32 registers at $0460-$047F, the next 32 byte aligned block
 // after the two POKEY windows, so it displaces neither. The chip decodes its own
-// registers from A4..A0, which is why the window has to be 32 byte aligned - see
-// .agents/plans/PLAN_minnie_fpga.md. Enabled from the OSD; the a78 header's type
-// field has no bits left.
+// registers from A4..A0, which is why the window has to be 32 byte aligned.
+// Enabled from the OSD; the a78 header's type field has no bits left.
 wire is_minnie = (minnie_en && address_in[15:5] == 11'b0000_0100_011 && cart_cs);
 
 assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15] || minnie_active;
@@ -429,7 +427,7 @@ always_comb begin
 end
 
 logic [3:0] ch0, ch1, ch2, ch3, ch0_2, ch1_2, ch2_2, ch3_2;
-wire [15:0] pokey_aud, pokey2_aud;
+logic [15:0] pokey_aud, pokey2_aud;
 logic [15:0] pokey_mux, pokey2_mux;
 logic [3:0] pokey2_cs;
 logic using_two_pokey;
@@ -453,18 +451,29 @@ assign pokey_audio_r = (cart_flags[0] || cart_flags[6] || cart_flags[10] || cart
 assign pokey_audio_l = ~using_two_pokey ? pokey_audio_r : pokey2_mux;
 
 // Minnie takes two non-overlapping phase enables. pclk0 is when the processor
-// bus is valid, the same phase POKEY is clocked on; the microcode advances on
-// the clk_sys cycle after it, which is how rtl/Pokey/pokey_adapter.sv makes its
-// second phase too. One microcode state per processor clock, so 64 per sample.
+// bus is valid; the microcode advances on the clk_sys cycle after it. One
+// microcode state per processor clock, so 64 per sample.
 logic minnie_ph1;
 always_ff @(posedge clk_sys)
 	minnie_ph1 <= pclk0;
 
-logic [15:0] minnie_aud;
+wire [15:0] minnie_aud;
 
-// BISECT STUB: Minnie removed. Restore from tmp/phi2/cart_orig.sv.
-assign minnie_dout = 8'hFF;
-assign minnie_aud  = 16'd0;
+minnie the_mouse (
+	.clk       (clk_sys),
+	.ph1_en    (minnie_ph1),
+	.ph2_en    (pclk0),
+	.reset     (reset),
+	.a         (address_in[4:0]),
+	.cs        (is_minnie),
+	.rw        (rw),
+	.d_in      (din),
+	.d_out     (minnie_dout),
+	.d_oe      (),
+	.sample    (),
+	.sample_en (),
+	.aud       (minnie_aud)
+);
 
 // Latched on the first access, the way using_two_pokey is. The OSD option only
 // makes the chip reachable; until a program actually writes to it, Minnie
@@ -478,8 +487,9 @@ always_ff @(posedge clk_sys) begin
 		minnie_active <= 1'b1;
 end
 
-assign minnie_audio_r = minnie_active ? minnie_aud : 16'd0;
-assign minnie_audio_l = minnie_audio_r;
+// Minnie has one output pin, so this is mono. top.sv mixes it into both
+// channels.
+assign minnie_audio = minnie_active ? minnie_aud : 16'd0;
 
 logic [5:0] keyboard_scan;
 logic [1:0] keyboard_response;
@@ -495,13 +505,73 @@ ps2_to_atari800 ps2_to_pokey (
 	.KEYBOARD_RESPONSE (keyboard_response)
 );
 
-// BISECT STUB: POKEY 1 removed. Restore from tmp/phi2/cart_orig.sv.
-assign pokey4k_dout = 8'hFF;
-assign pokey_aud    = 16'd0;
+pokey_adapter the_penguin (
+	.CLK                  (clk_sys),
+	.PHI1_EN              (pclk1),
+	.PHI2_EN              (pclk0),
+	.ADDR                 (address_in[3:0]),
+	.DATA_IN              (din),
+	.WR_EN                (~rw & pokey_cs),
+	.RESET_N              (~reset),
+	.keyboard_scan_enable (old_ps2_10 != ps2_key[10]),
+	.keyboard_scan        (keyboard_scan),
+	.keyboard_response    (keyboard_response),
 
-// BISECT STUB: POKEY 2 removed. Restore from tmp/phi2/cart_orig.sv.
-assign pokey2_dout = 8'hFF;
-assign pokey2_aud  = 16'd0;
+	.POT_IN               (),
+	.SIO_IN1              (),
+	.SIO_IN2              (),
+	.SIO_IN3              (),
+	.DATA_OUT             (pokey4k_dout),
+	.CHANNEL_0_OUT        (ch0),
+	.CHANNEL_1_OUT        (ch1),
+	.CHANNEL_2_OUT        (ch2),
+	.CHANNEL_3_OUT        (ch3),
+	.AUD                  (pokey_aud),
+
+	.IRQ_N_OUT            (pokey_irq_n),
+	.SIO_OUT1             (),
+	.SIO_OUT2             (),
+	.SIO_OUT3             (),
+	.SIO_CLOCKIN_IN       (),
+	.SIO_CLOCKIN_OUT      (),
+	.SIO_CLOCKIN_OE       (),
+	.SIO_CLOCKOUT         (),
+	.POT_RESET            ()
+);
+
+pokey_adapter return_of_pokey (
+	.CLK                  (clk_sys),
+	.PHI1_EN              (pclk1),
+	.PHI2_EN              (pclk0),
+	.ADDR                 (address_in[3:0]),
+	.DATA_IN              (din),
+	.WR_EN                (~rw & pokey2_cs),
+	.RESET_N              (~reset),
+	.keyboard_scan_enable (),
+	.keyboard_scan        (),
+	.keyboard_response    (),
+
+	.POT_IN               (),
+	.SIO_IN1              (),
+	.SIO_IN2              (),
+	.SIO_IN3              (),
+	.DATA_OUT             (pokey2_dout),
+	.CHANNEL_0_OUT        (ch0_2),
+	.CHANNEL_1_OUT        (ch1_2),
+	.CHANNEL_2_OUT        (ch2_2),
+	.CHANNEL_3_OUT        (ch3_2),
+	.AUD                  (pokey2_aud),
+
+	.IRQ_N_OUT            (),
+	.SIO_OUT1             (),
+	.SIO_OUT2             (),
+	.SIO_OUT3             (),
+	.SIO_CLOCKIN_IN       (),
+	.SIO_CLOCKIN_OUT      (),
+	.SIO_CLOCKIN_OE       (),
+	.SIO_CLOCKOUT         (),
+	.POT_RESET            ()
+);
 
 wire [15:0] ym_audio_lo, ym_audio_ro;
 

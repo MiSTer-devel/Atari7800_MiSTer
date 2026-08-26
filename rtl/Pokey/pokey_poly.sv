@@ -22,7 +22,7 @@
 
 // POKEY polynomial counters: the 4 bit, the 5 bit, and the 17/9 bit.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 5, left side.
+// Source: PokeyReSchem-13.pdf page 5, left side.
 //
 // ---------------------------------------------------------------------------
 // What the schematic shows
@@ -38,9 +38,8 @@
 //   +------------------------------+
 //
 // The 4 bit taps stages 3 and 4. That reading is confirmed twice over: MAME's
-// poly_init_4_5 XNORs exactly those two taps, and the AtariAge tap thread in
-// references/Pokey/forum gives 3 and 5 for the 5 bit. Three independent
-// sources agreeing is the strongest evidence position in this rewrite.
+// poly_init_4_5 XNORs exactly those two taps, and the AtariAge tap thread
+// gives 3 and 5 for the 5 bit.
 //
 // The feedback polarity differs between the polys, and so does the state Init
 // parks them in. Getting this backwards leaves a counter stuck forever.
@@ -122,11 +121,10 @@ module pokey_poly (
 	// of bits 13 and 8, injected at bit 7, and the shift is to the right.
 	//
 	// The output is NOT the end of the chain. It is bit 9, held one enable in a
-	// separate flop. The VHDL this replaces takes the same tap and annotates it
+	// separate flop. Watson's pokey.vhdl takes the same tap and annotates it
 	// "from pokey schematics"; page 5 shows poly17Out coming off a node part
 	// way along the chain through an inverter pair, not off the last stage.
-	// Taking bit 0 instead leaves the noise stream a fixed phase out, which is
-	// what the GHDL differential was showing.
+	// Taking bit 0 instead leaves the noise stream a fixed phase out.
 	//
 	// RANDOM is bits 15..8 through the driver row below, which inverts. With
 	// XNOR feedback the register settles to all zeros while init holds bit 16
@@ -165,7 +163,7 @@ module pokey_poly (
 	// -----------------------------------------------------------------------
 	// Page 5 draws AddrAr entering the row at the left as Rd and passing across
 	// it, In coming down from the 17 bit register, and each box's Q driving
-	// D7r..D0r (300 dpi -f 5 -x 400 -y 3980 -W 3200 -H 620). The cell is the
+	// D7r..D0r. The cell is the
 	// pull down, so it inverts on its own: feed it the true bit and the bus
 	// carries the complement. Complementing here as well would read $00.
 	wire [7:0] random_q, random_oe;

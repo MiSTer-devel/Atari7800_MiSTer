@@ -22,7 +22,7 @@
 
 // POKEY's internal clock dividers: 64 kHz, 15 kHz, and the keyboard scan clock.
 //
-// Source: references/Pokey/schematics/PokeyReSchem-13.pdf page 4, right side.
+// Source: PokeyReSchem-13.pdf page 4, right side.
 //
 // The divide ratios are not guesses. The CO12294 spec gives the exact
 // frequencies for NTSC:
@@ -52,7 +52,7 @@
 //   15 kHz   7 bits   XNOR of bits 6 and 7   force at 1001001 -> 114
 //
 // The digit drawn inside each stage is Atari's coupler-phase mark, not an
-// instance number: `references/Pokey/die/pokey.pdf` page 46 says "NUMBER
+// instance number: `pokey.pdf` page 46 says "NUMBER
 // INDICATES CLOCK PHASE OF INPUT COUPLERS". Reading the digits in signal
 // order, right to left, gives an unbroken run of ("2","1") pairs, and the
 // count settles the chain lengths without appeal to any other source:
@@ -60,13 +60,11 @@
 //   15 kHz  NOR"2", NOR"1", then 12 inverters 2,1,2,1,...  =  7 pairs
 //   64 kHz  NOR"2", inv"1", then  8 inverters 2,1,2,1,...  =  5 pairs
 //
-// (digit positions in PDF points: 15 kHz row y=482 x=1795..2956, 64 kHz row
-// y=855 x=1863..2627). So a bit is one ("2","1") pair, the chain advances once
+// So a bit is one ("2","1") pair, the chain advances once
 // per target clock, and the pair is one register bit here. The bit a tap sees
 // is the settled o1 node, which is why `phi2_en` is wired from the o1 strobe
 // in pokey.sv despite its name. Numbering and both force states agree with
-// Altirra, references/Pokey/implementations/altirra/pokey.cpp:2864-2877, which
-// is where the 28 and 114 came from originally.
+// Altirra's pokey.cpp, which is where the 28 and 114 came from originally.
 //
 // Reading the comparator. It is the horizontal wire drawn under each chain: a
 // depletion pull-up at the far end and one pull-down transistor per tap, each
@@ -82,12 +80,11 @@
 //                               direct, direct                  -> 00010
 //
 // Init. Both feedback gates draw their Init input with an X through it. That
-// mark is now settled: page 46's legend reads "X INDICATES NO COUPLER ON THAT
+// mark is decoded by page 46's legend: "X INDICATES NO COUPLER ON THAT
 // INPUT", so Init is a real, direct, unclocked input to a gate whose other
 // inputs are phase clocked - which is why it is applied combinationally here
-// rather than through the shift enable. Checked at 600 dpi on the 64 kHz gate,
-// -f 4 -x 21100 -y 6500 -W 2300 -H 1200: a three-input NOR marked "2" with the
-// X on the Init leg. Init reaches the two chains at different points and
+// rather than through the shift enable. The 64 kHz gate is a three-input NOR
+// marked "2" with the X on the Init leg. Init reaches the two chains at different points and
 // that is what produces the lopsided reset states Altirra documents: on the
 // 15 kHz side it is one input of the second NOR of the pair, the "1" one, so
 // it feeds zeros in; on the 64 kHz side it is one input of a three-input "2"
