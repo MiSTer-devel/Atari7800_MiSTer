@@ -61,7 +61,7 @@ logic [1:0] pix_ce_paused;
 always @(posedge clk_sys) begin
 	pix_ce_paused <= pix_ce_paused + 2'd1;
 end
-wire pix_ce_immediate = pause ? (is_maria ? pix_ce_paused[0] : pix_ce_paused[1]) : pix_ce_normal;
+wire pix_ce_immediate = pause ? pix_ce_paused[is_maria ? 0 : 1] : pix_ce_normal;
 logic pix_ce_delayed;
 logic [7:0] yuv_index;
 logic [7:0][1:0] last_color;
