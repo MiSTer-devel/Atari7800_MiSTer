@@ -80,6 +80,7 @@ module Atari7800(
 	input  logic       use_stereo,
 	input [10:0]       ps2_key,
 	input              pokey_irq,
+	input              minnie_en,
 	input              decomb,
 	input [4:0]        mapper,
 	input              pal_load,
@@ -116,6 +117,7 @@ module Atari7800(
 	logic [7:0]     write_DB;
 	logic [7:0]     tia_DB_out, riot_DB_out, maria_DB_out, ram0_DB_out, ram1_DB_out, cart_DB_out;
 	logic [15:0]    pokey_audio_r, pokey_audio_l, ym_audio_r, ym_audio_l;
+	logic [15:0]    minnie_audio;
 	logic           mclk0;
 	logic           mclk1;
 	logic           cs_ram0, cs_ram1, cs_tia, cs_riot, cs_maria;
@@ -127,6 +129,7 @@ module Atari7800(
 	logic [15:0]    covox_r, covox_l;
 	logic [15:0]    last_address;
 	logic           pclk1, pclk0, pclk1_m, pclk0_m, pclk1_t, pclk0_t;
+	logic           pclk1_raw, pclk0_raw;
 	logic           tia_clk_x2;
 	logic           read_2600;
 	logic [1:0]     pause_clock;
@@ -172,11 +175,11 @@ module Atari7800(
 		RW = cpu_released ? 1'b1 : cpu_rwn;
 
 		if (cpu_driver && tia_en) begin
-			pclk0 = pclk0_t;
-			pclk1 = pclk1_t;
+			pclk0_raw = pclk0_t;
+			pclk1_raw = pclk1_t;
 		end else begin
-			pclk0 = pclk0_m;
-			pclk1 = pclk1_m;
+			pclk0_raw = pclk0_m;
+			pclk1_raw = pclk1_m;
 		end
 	end
 
@@ -361,8 +364,8 @@ module Atari7800(
 	// halved to ensure no clipping. If in the future more than two external audio devices are used
 	// at once, eg covox + ym2151 + tia, then more reduction will be needed, but for the time being
 	// that seems unlikely.
-	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + {tape_audio, 12'd0};
-	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + {tape_audio, 12'd0};
 
 	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
 	assign AUDIO_L = ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0];
@@ -389,7 +392,10 @@ module Atari7800(
 
 	M6502C cpu_inst
 	(
-		.pclk1        (pclk1),
+		.pclk1        (pclk1_raw),
+		.pclk0        (pclk0_raw),
+		.phi1_ce      (pclk1),
+		.phi2_ce      (pclk0),
 		.clk_sys      (clk_sys),
 		.reset        (reset),
 		.AB           (cpu_AB),
@@ -476,6 +482,7 @@ module Atari7800(
 		.dout           (cart_7800_DB_out),
 		.pokey_audio_r  (pokey_audio_r),
 		.pokey_audio_l  (pokey_audio_l),
+		.minnie_audio   (minnie_audio),
 		.ym_audio_r     (ym_audio_r),
 		.ym_audio_l     (ym_audio_l),
 		.rom_address    (cart_7800_addr_out),
@@ -484,7 +491,8 @@ module Atari7800(
 		.covox_l        (covox_l),
 		.external_audio (ext_audio),
 		.ps2_key        (ps2_key),
-		.pokey_irq_en   (pokey_irq)
+		.pokey_irq_en   (pokey_irq),
+		.minnie_en      (minnie_en)
 	);
 
 	assign cart_2600_addr_out[24:19] = '0;
@@ -567,7 +575,10 @@ endmodule
 
 module M6502C
 (
-	input         pclk1,     // CPU clock (Phi1)
+	input         pclk1,     // start of phase 1, from MARIA or TIA
+	input         pclk0,     // start of phase 2, from MARIA or TIA
+	output        phi1_ce,   // pin 3:  the paired phase 1, for the rest of the system
+	output        phi2_ce,   // pin 39: the paired phase 2, for the rest of the system
 	input         clk_sys,   // MARIA Clock
 	input         reset,     // reset signal
 	input  [7:0]  DB_IN,     // data in,
@@ -578,39 +589,63 @@ module M6502C
 	output [15:0] AB,        // address bus
 	output [7:0]  DB_OUT,    // data_out,
 	output        RD,        // read enable
-	output        is_halted  // This is used to indicate that sally has released the bus
+	output logic  is_halted  // This is used to indicate that sally has released the bus
 );
 
-	logic cpu_halt_n = 1;
-	logic rdy_delay = 1;
+	// MARIA restarts its CPU clock divider when MARIA is enabled, and the
+	// restart can put out a phase 2 with no phase 1 before it - once at reset,
+	// once on the BIOS's first write to the lockout register. T65 only used
+	// pclk1 and never noticed. This core is two-phase and a doubled phase 2
+	// steps its T-state without a new address, so the stray pulse is dropped
+	// here rather than in MARIA, where the shape of that restart is load
+	// bearing for everything else.
+	logic in_phase2 = 1'b0;
+	wire  phi1_en = pclk1 & ~in_phase2;
+	wire  phi2_en = pclk0 &  in_phase2;
 
-	T65 cpu (
-		.mode (0),
-		.BCD_en(1),
-
-		.Res_n(~reset),
-		.Clk(clk_sys),
-		.Enable(pclk1 && cpu_halt_n),
-		.Rdy(rdy_delay),
-
-		.IRQ_n(IRQ_n),
-		.NMI_n(NMI_n),
-		.R_W_n(RD),
-		.A(AB),
-		.DI(RD ? DB_IN : DB_OUT),
-		.DO(DB_OUT)
-	);
-
-	always @(posedge clk_sys) begin
-		is_halted <= ~cpu_halt_n;
-		if (reset) begin
-			is_halted <= 0;
-			cpu_halt_n <= 1;
-			rdy_delay <= 1;
-		end else if (pclk1) begin
-			cpu_halt_n <= halt_n;
-			rdy_delay <= RDY;
-		end
+	always_ff @(posedge clk_sys) begin
+		if      (phi1_en) in_phase2 <= 1'b1;
+		else if (phi2_en) in_phase2 <= 1'b0;
 	end
+
+	// SALLY pin 39 is the system clock - TIA, RIOT, both cartridge slots and
+	// MARIA pin 6 all run off it, not off MARIA's own divider. So the rest of
+	// the core gets the same paired phases the CPU acted on, and a dropped
+	// pulse is dropped for everyone. Taken before the halt gate: the pins keep
+	// running while MARIA owns the bus.
+	assign phi1_ce = phi1_en;
+	assign phi2_ce = phi2_en;
+
+	// SALLY carries the halt handshake itself: the two phase-2 flip-flops that
+	// release the bus, and the stall into the core's own RDY. The wrapper is
+	// now only a name and a pin adapter.
+	sally cpu (
+		.clk_sys  (clk_sys),
+		.phi1_en  (phi1_en),
+		.phi2_en  (phi2_en),
+
+		.res_n    (~reset),
+		.rdy      (RDY),
+		.irq_n    (IRQ_n),
+		.nmi_n    (NMI_n),
+		.so_n     (1'b1),
+		.data_in  (RD ? DB_IN : DB_OUT),
+		.data_out (DB_OUT),
+		.data_oe  (),
+		.addr_out (AB),
+		.rw_n     (RD),
+		.sync     (),
+		.phi1_out (),
+		.phi2_out (),
+
+		.halt_n   (halt_n),
+		.addr_oe  (),
+		.rw_oe    (),
+		.is_halted(is_halted),
+		.jammed   (),
+
+		.dbg_a (), .dbg_x (), .dbg_y (), .dbg_s (),
+		.dbg_p (), .dbg_ir(), .dbg_pc()
+	);
 
 endmodule: M6502C

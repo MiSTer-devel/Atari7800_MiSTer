@@ -9,7 +9,7 @@
 module cart2600
 (
 	// Physical Pins
-	output   [7:0]  d_out, // Data bus
+	output logic [7:0]  d_out, // Data bus
 	input    [7:0]  d_in,  // Data bus
 	input    [12:0] a_in,  // Address bus
 
@@ -72,11 +72,17 @@ module cart2600
 	wire is_bad_game = mapper == BANKDPCP || mapper == BANKCDF;
 
 	// Handle unsupportable ARM mappers :(
-	spram #(.addr_width(11), .mem_init_file("ooo.mif")) badgame_ram
+	spram #(
+		.addr_width(11),
+		.mem_init_file("ooo.mif"),
+		.sim_init_file("rtl/ooo.hex")
+	) badgame_ram
 	(
 		.clock      (clk),
 		.address    (a_in[10:0]),
-		.wren       (0),
+		.data       (8'd0),
+		.wren       (1'b0),
+		.cs         (1'b1),
 		.q          (bg_data)
 	);
 

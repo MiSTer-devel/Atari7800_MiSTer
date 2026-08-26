@@ -1,10 +1,24 @@
 // k7800 (c) by Jamie Blanks
-
-// k7800 is licensed under a
-// Creative Commons Attribution-NonCommercial 4.0 International License.
-
-// You should have received a copy of the license along with this
-// work. If not, see http://creativecommons.org/licenses/by-nc/4.0/.
+//
+// Copyright (c) 2021-2026 Jamie Blanks
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 
 module maria(
@@ -90,9 +104,9 @@ module maria(
 	logic [2:0]       palette;
 	logic [1:0]       zp_written;
 	logic [7:0]       UV_out;
-	logic [2:0]       clock_div;
+	logic [2:0]       clock_div = 3'd2;
 	logic [1:0]       edge_counter;
-	logic [7:0]       pal_counter;
+	logic [7:0]       pal_counter = 8'd0;
 	logic             wsync;
 	logic             border;
 	logic             prst;
@@ -104,10 +118,10 @@ module maria(
 	logic             halt_en;
 	logic             DLI_en;
 	logic             dli_latch;
-	logic             clk_toggle;
+	logic             clk_toggle = 1'b0;
 	logic             old_dli;
 	logic             latch_byte;
-	logic             pclk_toggle;
+	logic             pclk_toggle = 1'b0;
 	logic             sel_slow_clock;
 	logic             NMI_ung_n;
 	logic             slow_clk_latch;
@@ -115,12 +129,12 @@ module maria(
 	logic             cram_sel;
 	logic             ABEN;
 	logic             old_ready;
-	logic             old_men;
-	logic [3:0]       men_count;
+	logic             old_men = 1'b0;
+	logic [3:0]       men_count = 4'd0;
 	logic             noslow;
-	logic             pclk;
+	logic             pclk = 1'b0;
 	logic             tia_clk_en;
-	logic [3:0]       tia_enable_count;
+	logic [3:0]       tia_enable_count = 4'd2;
 
 	// Apply color kill if needed
 	assign YC = UV_out & (ctrl[7] ? 8'h0F : 8'hFF);
@@ -135,68 +149,57 @@ module maria(
 	assign tia_clk_x2 = tia_clk_en && mclk0;
 
 	always @(posedge clk_sys) begin
+		mclk1 <= 1'b0;
+		mclk0 <= 1'b0;
+		pclk0 <= 1'b0;
+		pclk1 <= 1'b0;
+
 		if (reset) begin
-			clock_div <= bypass_bios ? 2'd1 : 2'd2;
-			clk_toggle <= 0;
-			pclk_toggle <= bypass_bios ? 1'd1: 1'd0;
-			old_ready <= 1;
-			pal_counter <= 0;
-			mclk1 <= 0;
-			mclk0 <= 0;
-			pclk0 <= 0;
-			pclk1 <= 0;
-			ready_int <= 1;
-			slow_clk_latch <= 0;
-			tia_enable_count <= 2;
-		end else begin
-			// if (PAL)
-			// 	pal_counter <= pal_counter + 1'd1;
-			// else
-			// 	pal_counter <= 0;
+			old_ready <= 1'b1;
+			pal_counter <= 8'd0;
+			ready_int <= 1'b1;
+			slow_clk_latch <= 1'b0;
+			tia_enable_count <= 4'd2;
+		end
 
-			mclk1 <= 0;
-			mclk0 <= 0;
-			pclk0 <= 0;
-			pclk1 <= 0;
-			if (ce) begin
-				old_men <= maria_en;
+		if (ce) begin
+			old_men <= maria_en;
 
-				// If maria enabled rises, the CPU clock is held in a state
-				// of reset for 5 master oscillator cycles.
-				if (~old_men && maria_en) begin
-					men_count <= 5;
-				end
+			// If maria enabled rises, the CPU clock is held in a state
+			// of reset for 5 master oscillator cycles.
+			if (~old_men && maria_en) begin
+				men_count <= 4'd5;
+			end
 
-				if (mclk1 && |tia_enable_count)
-					tia_enable_count <= tia_enable_count - 1'd1;
+			if (!reset && mclk1 && |tia_enable_count)
+				tia_enable_count <= tia_enable_count - 1'd1;
 
-				if (|men_count)
-					men_count <= men_count - 1'd1;
+			if (|men_count)
+				men_count <= men_count - 1'd1;
 
-				if (mclk0) begin
-					if (pclk1)
-						pclk <= 0;
-					else if (pclk0)
-						pclk <= 1;
-				end
+			if (mclk0) begin
+				if (pclk1)
+					pclk <= 0;
+				else if (pclk0)
+					pclk <= 1;
+			end
 
-				if (pal_counter == 109) begin
-					pal_counter <= 0;
-					mclk0 <= 0;
-					mclk1 <= 0;
-				end else begin
-					mclk0 <= clk_toggle;
-					mclk1 <= ~clk_toggle;
-					clk_toggle <= ~clk_toggle;
-				end
+			if (pal_counter == 8'd109) begin
+				pal_counter <= 8'd0;
+				mclk0 <= 1'b0;
+				mclk1 <= 1'b0;
+			end else begin
+				mclk0 <= clk_toggle;
+				mclk1 <= ~clk_toggle;
+				clk_toggle <= ~clk_toggle;
+			end
 
+			if (!reset) begin
 				if (wsync)
 					ready_int <= 1'b0;
 				else
-
-				if (lrc) begin
-					ready_int <= 1'b1;
-				end
+					if (lrc)
+						ready_int <= 1'b1;
 
 				if (pclk0)
 					slow_clk_latch <= sel_slow_clock;
@@ -204,22 +207,24 @@ module maria(
 				if (~pclk) begin
 					old_ready <= ready_int;
 				end
+			end
 
-				// FIXME: Redo clocks based on combinational logic with CE
-				if (mclk1) begin
-					if (clock_div)
-						clock_div <= clock_div - 1'd1;
-					else begin
-						pclk_toggle <= ~pclk_toggle;
-						pclk1 <= pclk_toggle;
-						pclk0 <= ~pclk_toggle;
-						clock_div <= (~pclk_toggle ? sel_slow_clock : slow_clk_latch) ? 3'd2 : 2'd1;
-					end
+			// The timing schematic has no reset input to the processor-clock
+			// generator. Keep PCLK0 running while the model reset clears
+			// functional state so SALLY can recognize reset.
+			if (mclk1) begin
+				if (clock_div != 3'd0)
+					clock_div <= clock_div - 1'd1;
+				else begin
+					pclk_toggle <= ~pclk_toggle;
+					pclk1 <= pclk_toggle;
+					pclk0 <= ~pclk_toggle;
+					clock_div <= (~pclk_toggle ? sel_slow_clock : slow_clk_latch) ? 3'd2 : 3'd1;
 				end
-				if (|men_count) begin
-					pclk_toggle <= 0;
-					clock_div <= sel_slow_clock ? 3'd2 : 2'd1;
-				end
+			end
+			if (|men_count) begin
+				pclk_toggle <= 1'b0;
+				clock_div <= sel_slow_clock ? 3'd2 : 3'd1;
 			end
 		end
 	end

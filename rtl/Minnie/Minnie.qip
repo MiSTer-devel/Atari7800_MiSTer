@@ -1,0 +1,7 @@
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_poly.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_wave.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_regs.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_datapath.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_seq.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie_out.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) minnie.sv]

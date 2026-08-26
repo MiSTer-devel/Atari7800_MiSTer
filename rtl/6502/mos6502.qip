@@ -1,0 +1,7 @@
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502_pkg.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502_alu.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502_decode.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502_dp.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502_ctl.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) mos6502.sv]
+set_global_assignment -name SYSTEMVERILOG_FILE [file join $::quartus(qip_path) sally.sv]

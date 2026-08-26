@@ -29,6 +29,7 @@ module cart
 	input  logic  [7:0] open_bus,
 	input  logic [10:0] ps2_key,
 	input  logic        pokey_irq_en,
+	input  logic        minnie_en,
 	input  logic [7:0]  cartram_data,
 
 	output logic        IRQ_n,
@@ -37,6 +38,7 @@ module cart
 	output logic        cart_read,
 	output logic [15:0] pokey_audio_r,
 	output logic [15:0] pokey_audio_l,
+	output logic [15:0] minnie_audio,
 	output logic [15:0] ym_audio_r,
 	output logic [15:0] ym_audio_l,
 	output logic [15:0] covox_r,
@@ -55,6 +57,8 @@ logic [7:0] ym_dout;
 logic [7:0] hsc_rom_dout;
 logic [7:0] hsc_ram_dout;
 logic [7:0] pokey4k_dout, pokey2_dout;
+logic [7:0] minnie_dout;
+logic       minnie_active;
 
 logic rom_cs, ram_cs, pokey_cs, ym_cs;
 logic [2:0] hardware_map[16];
@@ -276,7 +280,13 @@ wire is_covox = address_in[15:4] == 12'h43;
 
 wire is_ym = (((cart_flags[11] || XCTRL1[7]) && address_in[15:1] == 15'h230) && cart_cs);
 
-assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15];
+// Minnie, GCC 1730. 32 registers at $0460-$047F, the next 32 byte aligned block
+// after the two POKEY windows, so it displaces neither. The chip decodes its own
+// registers from A4..A0, which is why the window has to be 32 byte aligned.
+// Enabled from the OSD; the a78 header's type field has no bits left.
+wire is_minnie = (minnie_en && address_in[15:5] == 11'b0000_0100_011 && cart_cs);
+
+assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15] || minnie_active;
 
 logic [3:0] address_index;
 assign address_index = address_in[15:12];
@@ -405,6 +415,8 @@ always_comb begin
 		dout = pokey4k_dout;
 	if (is_pokey_440)
 		dout = pokey2_dout;
+	if (is_minnie)
+		dout = minnie_dout;
 	if (souper_en) begin
 		if (~souper_ram_cs)
 			dout = ram_dout;
@@ -415,7 +427,8 @@ always_comb begin
 end
 
 logic [3:0] ch0, ch1, ch2, ch3, ch0_2, ch1_2, ch2_2, ch3_2;
-logic [5:0] pokey_mux, pokey2_mux;
+logic [15:0] pokey_aud, pokey2_aud;
+logic [15:0] pokey_mux, pokey2_mux;
 logic [3:0] pokey2_cs;
 logic using_two_pokey;
 
@@ -425,12 +438,58 @@ always @(posedge clk_sys) begin
 	if (is_pokey_440)
 		using_two_pokey <= 1;
 
-	pokey_mux <= ch0 + ch1 + ch2 + ch3;
-	pokey2_mux <= ch0_2 + ch1_2 + ch2_2 + ch3_2;
+	// The AUD node, not a sum of the four channel volumes. POKEY has one
+	// output pin: the four DACs share it, their volume bits are not a clean
+	// 1:2:4:8, and the total saturates. All three are measured - see
+	// pokey_mixer.sv. Summing the channels linearly, which this did before,
+	// is audibly wrong once more than one channel is loud.
+	pokey_mux <= pokey_aud;
+	pokey2_mux <= pokey2_aud;
 end
 
-assign pokey_audio_r = (cart_flags[0] || cart_flags[6] || cart_flags[10] || cart_flags[15]) ? {pokey_mux, 10'd0} : 16'd0;
-assign pokey_audio_l = ~using_two_pokey ? pokey_audio_r : {pokey2_mux, 10'd0};
+assign pokey_audio_r = (cart_flags[0] || cart_flags[6] || cart_flags[10] || cart_flags[15]) ? pokey_mux : 16'd0;
+assign pokey_audio_l = ~using_two_pokey ? pokey_audio_r : pokey2_mux;
+
+// Minnie takes two non-overlapping phase enables. pclk0 is when the processor
+// bus is valid; the microcode advances on the clk_sys cycle after it. One
+// microcode state per processor clock, so 64 per sample.
+logic minnie_ph1;
+always_ff @(posedge clk_sys)
+	minnie_ph1 <= pclk0;
+
+wire [15:0] minnie_aud;
+
+minnie the_mouse (
+	.clk       (clk_sys),
+	.ph1_en    (minnie_ph1),
+	.ph2_en    (pclk0),
+	.reset     (reset),
+	.a         (address_in[4:0]),
+	.cs        (is_minnie),
+	.rw        (rw),
+	.d_in      (din),
+	.d_out     (minnie_dout),
+	.d_oe      (),
+	.sample    (),
+	.sample_en (),
+	.aud       (minnie_aud)
+);
+
+// Latched on the first access, the way using_two_pokey is. The OSD option only
+// makes the chip reachable; until a program actually writes to it, Minnie
+// contributes nothing. Without this, switching the option on would halve every
+// other source through external_audio and add Minnie's DC bias to the mix, for
+// every game that never uses it.
+always_ff @(posedge clk_sys) begin
+	if (reset || ~minnie_en)
+		minnie_active <= 1'b0;
+	else if (is_minnie && ~rw)
+		minnie_active <= 1'b1;
+end
+
+// Minnie has one output pin, so this is mono. top.sv mixes it into both
+// channels.
+assign minnie_audio = minnie_active ? minnie_aud : 16'd0;
 
 logic [5:0] keyboard_scan;
 logic [1:0] keyboard_response;
@@ -438,10 +497,7 @@ logic old_ps2_10;
 always @(posedge clk_sys)
 	old_ps2_10 <= ps2_key[10];
 
-ps2_to_atari800 #(
-	.ps2_enable(0),
-	.direct_enable(1))
-ps2_to_pokey (
+ps2_to_atari800 ps2_to_pokey (
 	.CLK               (clk_sys),
 	.RESET_N           (~reset),
 	.INPUT             ({12'h000, 3'b000, ps2_key[9], 3'b000, ps2_key[8], 4'h0, ps2_key[7:0]}),
@@ -449,9 +505,10 @@ ps2_to_pokey (
 	.KEYBOARD_RESPONSE (keyboard_response)
 );
 
-pokey the_penguin (
+pokey_adapter the_penguin (
 	.CLK                  (clk_sys),
-	.ENABLE_179           (pclk0),
+	.PHI1_EN              (pclk1),
+	.PHI2_EN              (pclk0),
 	.ADDR                 (address_in[3:0]),
 	.DATA_IN              (din),
 	.WR_EN                (~rw & pokey_cs),
@@ -469,6 +526,7 @@ pokey the_penguin (
 	.CHANNEL_1_OUT        (ch1),
 	.CHANNEL_2_OUT        (ch2),
 	.CHANNEL_3_OUT        (ch3),
+	.AUD                  (pokey_aud),
 
 	.IRQ_N_OUT            (pokey_irq_n),
 	.SIO_OUT1             (),
@@ -481,9 +539,10 @@ pokey the_penguin (
 	.POT_RESET            ()
 );
 
-pokey return_of_pokey (
+pokey_adapter return_of_pokey (
 	.CLK                  (clk_sys),
-	.ENABLE_179           (pclk0),
+	.PHI1_EN              (pclk1),
+	.PHI2_EN              (pclk0),
 	.ADDR                 (address_in[3:0]),
 	.DATA_IN              (din),
 	.WR_EN                (~rw & pokey2_cs),
@@ -501,6 +560,7 @@ pokey return_of_pokey (
 	.CHANNEL_1_OUT        (ch1_2),
 	.CHANNEL_2_OUT        (ch2_2),
 	.CHANNEL_3_OUT        (ch3_2),
+	.AUD                  (pokey2_aud),
 
 	.IRQ_N_OUT            (),
 	.SIO_OUT1             (),
@@ -550,10 +610,18 @@ end
 assign hsc_ram_cs = address_in[15:11] == 5'd2 && hsc_en;
 wire hsc_rom_cs = address_in[15:12] == 4'd3 && hsc_en;
 
-spram #(.addr_width(12), .mem_name("HSC"), .mem_init_file("mem4.mif")) hsc_rom
+spram #(
+	.addr_width(12),
+	.mem_name("HSC"),
+	.mem_init_file("mem4.mif"),
+	.sim_init_file("rtl/mem4.hex")
+) hsc_rom
 (
 	.address (address_in[11:0]),
 	.clock   (clk_sys),
+	.data    (8'd0),
+	.wren    (1'b0),
+	.cs      (1'b1),
 	.q       (hsc_rom_dout)
 );
 

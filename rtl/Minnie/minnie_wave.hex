@@ -1,0 +1,11 @@
+// Minnie default waveforms - generated, do not edit.
+// minnie_wavegen.py
+// 0x00-0x3F waveform 0, sine.  0x40-0x7F waveform 1, hollow reed.
+00 0C 19 25 31 3C 47 51 5A 62 6A 70 75 7A 7D 7E
+7F 7E 7D 7A 75 70 6A 62 5A 51 47 3C 31 25 19 0C
+00 F4 E7 DB CF C4 B9 AF A6 9E 96 90 8B 86 83 82
+81 82 83 86 8B 90 96 9E A6 AF B9 C4 CF DB E7 F4
+00 39 66 7E 7F 6F 57 41 35 34 3B 44 4A 4B 48 43
+42 43 48 4B 4A 44 3B 34 35 41 57 6F 7F 7E 66 39
+00 C7 9A 82 81 91 A9 BF CB CC C5 BC B6 B5 B8 BD
+BE BD B8 B5 B6 BC C5 CC CB BF A9 91 81 82 9A C7
