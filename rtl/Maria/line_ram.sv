@@ -46,10 +46,30 @@ module line_ram(
 	input  logic               cram_write
 );
 
-// The behavior of these make them work poorly in bram.
-// The real system can flash-clear them and also writes
-// to multiple cells at a time.
-logic [159:0][4:0] lram_in, lram_out;
+// Two things used to keep the whole line RAM in flops: MARIA writes up to four
+// cells at once, and the real part flash-clears the buffer at the start of a
+// line. Neither needs fabric for the cell data itself.
+//
+//   Four at once - consecutive cell addresses always differ in their low two
+//   bits, so banking on those hands each bank exactly one of the four writes
+//   whatever hpos is. Four ordinary one-write, one-read memories.
+//
+//   Flash clear - a cleared cell and a cell nobody wrote are the same thing, a
+//   background pixel. So the clear is not a clear, it is one bit per cell
+//   saying whether this line wrote it, and clearing 160 flops at once is what
+//   flops are good at. Only those bits stay in fabric.
+//
+//     cell address:  [7:2] row, 0..39     [1:0] bank
+//     bank 0   bank 1   bank 2   bank 3     each 40 rows x 2 buffers, one M10K
+//     └────────┴────────┴────────┴── one write each, rotated by hpos[1:0]
+localparam int ROWS = 40;            // 160 cells across four banks
+
+logic        wr_buf;                 // the buffer MARIA is filling
+// Rows 0..39 are the line; 40..63 are the scratch the row address lands on when
+// the write pointer runs past the end, which is what MARIA's own extra word
+// line WL1F is for. Every eight-bit write address therefore has a real home and
+// nothing is ever indexed out of range.
+logic [63:0] written [0:1][0:3];     // occupancy, [buffer][bank]
 
 logic [2:0] playback_palette;
 logic [1:0] playback_color;
@@ -57,6 +77,33 @@ logic [4:0] playback_cell;
 logic [8:0] playback_ix;
 logic [7:0] lram_ix;
 logic [7:0] hpos;
+
+// The four cells a byte can touch, before they are handed to banks.
+logic [3:0][4:0] cell_data;
+logic      [3:0] cell_wr;
+
+logic [3:0][1:0] bank_sel;
+logic [3:0][5:0] bank_row;
+logic [3:0][4:0] bank_data;
+logic      [3:0] bank_wr;
+wire  [3:0][4:0] bank_q;
+wire  [3:0][4:0] bank_unused;
+
+wire byte_now = ~RESET & mclk0 & latch_byte;
+wire swap_now = ~RESET & mclk0 & lrc;
+wire wr_buf_next = swap_now ? ~wr_buf : wr_buf;
+
+// The read address is the index the playback counter is about to take, so the
+// registered output always lines up with the counter however mclk0 is spaced.
+wire [8:0] playback_ix_next = mclk0 ? (border ? 9'd0 : playback_ix + 9'd1)
+                                    : playback_ix;
+wire [7:0] lram_ix_next = playback_ix_next[8:1];
+wire [5:0] rd_row = lram_ix[7:2];
+// A read past the end of the line selects no word line at all, so it reads as
+// background rather than as whatever the scratch rows happen to hold.
+wire       cell_present = rd_row < 6'(ROWS) &&
+	written[~wr_buf][lram_ix[1:0]][rd_row];
+wire [4:0] cell_read = cell_present ? bank_q[lram_ix[1:0]] : 5'd0;
 
 logic [5:0] pb_map_index[8];
 assign pb_map_index = '{5'd0, 5'd3, 5'd6, 5'd9, 5'd12, 5'd15, 5'd18, 5'd21};
@@ -82,7 +129,7 @@ end
 
 always_comb begin
 	lram_ix = playback_ix[8:1]; // 2 pixels per lram cell
-	playback_cell = lram_out[lram_ix];
+	playback_cell = cell_read;
 	playback_palette = playback_cell[4:2]; // Default to 160A/B
 	playback_color = playback_cell[1:0];
 	casex (RM)
@@ -179,91 +226,131 @@ always_comb begin
 	endcase
 end
 
+always_comb begin
+	for (int j = 0; j < 4; j++) begin
+		cell_data[j] = 5'd0;
+		cell_wr[j]   = 1'b0;
+	end
+
+	case (WM)
+		1'b0: begin
+			// "When wm = 0, each byte specifies four pixel cells
+			//  of the lineram"
+			// This encompasses:
+			// 160A:
+			//      [P2 P1 P0 D7 D6]
+			//      [P2 P1 P0 D5 D4]
+			//      [P2 P1 P0 D3 D2]
+			//      [P2 P1 P0 D1 D0]
+			// 320A:
+			//      [P2 P1 P0 D7  0]
+			//      [P2 P1 P0 D6  0]
+			//      [P2 P1 P0 D5  0]
+			//      [P2 P1 P0 D4  0]
+			//      [P2 P1 P0 D3  0]
+			//      [P2 P1 P0 D2  0]
+			//      [P2 P1 P0 D1  0]
+			//      [P2 P1 P0 D0  0]
+			// 320D:
+			//      [P2  0  0 D7 P1]
+			//      [P2  0  0 D6 P0]
+			//      [P2  0  0 D5 P1]
+			//      [P2  0  0 D4 P0]
+			//      [P2  0  0 D3 P1]
+			//      [P2  0  0 D2 P0]
+			//      [P2  0  0 D1 P1]
+			//      [P2  0  0 D0 P0]
+			// These can all be written into the cells using
+			// the same format and read out differently.
+			cell_wr[0] = |d_in[7:6] || KANGAROO_MODE;
+			cell_data[0] = {PALETTE, d_in[7:6]};
+			cell_wr[1] = |d_in[5:4] || KANGAROO_MODE;
+			cell_data[1] = {PALETTE, d_in[5:4]};
+			cell_wr[2] = |d_in[3:2] || KANGAROO_MODE;
+			cell_data[2] = {PALETTE, d_in[3:2]};
+			cell_wr[3] = |d_in[1:0] || KANGAROO_MODE;
+			cell_data[3] = {PALETTE, d_in[1:0]};
+		end
+		1'b1: begin
+			// "When wm = 1, each byte specifies two cells within the lineram."
+			// This encompasses:
+			// 160B:
+			//      [P2 D3 D2 D7 D6]
+			//      [P2 D1 D0 D5 D4]
+			// 320B:
+			//      [P2  0  0 D7 D3]
+			//      [P2  0  0 D6 D2]
+			//      [P2  0  0 D5 D1]
+			//      [P2  0  0 D4 D0]
+			// 320C:
+			//      [P2 D3 D2 D7  0]
+			//      [P2 D3 D2 D6  0]
+			//      [P2 D1 D0 D5  0]
+			//      [P2 D1 D0 D4  0]
+			// Again, these can be written into the cells in
+			// the same format and read out differently. Note:
+			// transparency may not be correct in 320B mode here
+			// since the color bits are different than 160B and 320C.
+			cell_wr[0] = |d_in[7:6] || KANGAROO_MODE;
+			cell_data[0] = {PALETTE[2], d_in[3:2], d_in[7:6]};
+			cell_wr[1] = |d_in[5:4] || KANGAROO_MODE;
+			cell_data[1] = {PALETTE[2], d_in[1:0], d_in[5:4]};
+		end
+		endcase
+end
+
+
+// hpos advances on a byte, or is loaded by the display list. A byte latched in
+// the same cycle wins and advances from the old position, as it did when both
+// assignments sat in one block.
 always_ff @(posedge clk_sys) begin
-	if (RESET) begin
-		hpos <= 0;
-	end else if (mclk0) begin
-
-		if (lrc) begin
-			lram_in <= 800'd0; // All background color
-			lram_out <= lram_in;
-		end
-
-		if (latch_hpos) begin
+	if (RESET)
+		hpos <= 8'd0;
+	else if (mclk0) begin
+		if (latch_hpos)
 			hpos <= d_in;
-		end
-
-		if (latch_byte) begin
-			// Load d_in byte into lram_in
-			case (WM)
-			1'b0: begin
-				// "When wm = 0, each byte specifies four pixel cells
-				//  of the lineram"
-				// This encompasses:
-				// 160A:
-				//      [P2 P1 P0 D7 D6]
-				//      [P2 P1 P0 D5 D4]
-				//      [P2 P1 P0 D3 D2]
-				//      [P2 P1 P0 D1 D0]
-				// 320A:
-				//      [P2 P1 P0 D7  0]
-				//      [P2 P1 P0 D6  0]
-				//      [P2 P1 P0 D5  0]
-				//      [P2 P1 P0 D4  0]
-				//      [P2 P1 P0 D3  0]
-				//      [P2 P1 P0 D2  0]
-				//      [P2 P1 P0 D1  0]
-				//      [P2 P1 P0 D0  0]
-				// 320D:
-				//      [P2  0  0 D7 P1]
-				//      [P2  0  0 D6 P0]
-				//      [P2  0  0 D5 P1]
-				//      [P2  0  0 D4 P0]
-				//      [P2  0  0 D3 P1]
-				//      [P2  0  0 D2 P0]
-				//      [P2  0  0 D1 P1]
-				//      [P2  0  0 D0 P0]
-				// These can all be written into the cells using
-				// the same format and read out differently.
-				hpos <= hpos + 3'd4;
-				if (|d_in[7:6] || KANGAROO_MODE)
-					lram_in[hpos + 8'd0] <= {PALETTE, d_in[7:6]};
-				if (|d_in[5:4] || KANGAROO_MODE)
-					lram_in[hpos + 8'd1] <= {PALETTE, d_in[5:4]};
-				if (|d_in[3:2] || KANGAROO_MODE)
-					lram_in[hpos + 8'd2] <= {PALETTE, d_in[3:2]};
-				if (|d_in[1:0] || KANGAROO_MODE)
-					lram_in[hpos + 8'd3] <= {PALETTE, d_in[1:0]};
-			end
-			1'b1: begin
-				// "When wm = 1, each byte specifies two cells within the lineram."
-				// This encompasses:
-				// 160B:
-				//      [P2 D3 D2 D7 D6]
-				//      [P2 D1 D0 D5 D4]
-				// 320B:
-				//      [P2  0  0 D7 D3]
-				//      [P2  0  0 D6 D2]
-				//      [P2  0  0 D5 D1]
-				//      [P2  0  0 D4 D0]
-				// 320C:
-				//      [P2 D3 D2 D7  0]
-				//      [P2 D3 D2 D6  0]
-				//      [P2 D1 D0 D5  0]
-				//      [P2 D1 D0 D4  0]
-				// Again, these can be written into the cells in
-				// the same format and read out differently. Note:
-				// transparency may not be correct in 320B mode here
-				// since the color bits are different than 160B and 320C.
-				hpos <= hpos + 2'd2;
-				if (|d_in[7:6] || KANGAROO_MODE)
-					lram_in[hpos + 8'd0] <= {PALETTE[2], d_in[3:2], d_in[7:6]};
-				if (|d_in[5:4] || KANGAROO_MODE)
-					lram_in[hpos + 8'd1] <= {PALETTE[2], d_in[1:0], d_in[5:4]};
-			end
-			endcase
-		end
+		if (latch_byte)
+			hpos <= hpos + (WM ? 8'd2 : 8'd4);
 	end
 end
+
+// Hand each bank the one cell of the four whose address ends in that bank.
+always_comb begin
+	for (int b = 0; b < 4; b++) begin
+		bank_sel[b]  = 2'(b) - hpos[1:0];
+		bank_row[b]  = 6'((hpos + 8'(bank_sel[b])) >> 2);
+		bank_data[b] = cell_data[bank_sel[b]];
+		bank_wr[b]   = byte_now && cell_wr[bank_sel[b]];
+	end
+end
+
+// A byte latched on the swap cycle belongs to the buffer being cleared: the
+// flop version wrote lram_in after clearing it, and the later assignment won.
+always_ff @(posedge clk_sys) begin
+	wr_buf <= wr_buf_next;
+	for (int b = 0; b < 4; b++) begin
+		if (swap_now)
+			written[wr_buf_next][b] <= 64'd0;
+		if (bank_wr[b])
+			written[wr_buf_next][b][bank_row[b]] <= 1'b1;
+	end
+end
+
+generate
+	genvar b;
+	for (b = 0; b < 4; b = b + 1) begin : bank
+		cache_ram_dp #(.ADDR_WIDTH(7), .DATA_WIDTH(5)) cells (
+			.clk_i     (clk_sys),
+			.addr_a_i  ({wr_buf_next, bank_row[b]}),
+			.wren_a_i  (bank_wr[b]),
+			.wdata_a_i (bank_data[b]),
+			.q_a_o     (bank_unused[b]),
+			.addr_b_i  ({~wr_buf_next, lram_ix_next[7:2]}),
+			.wren_b_i  (1'b0),
+			.wdata_b_i (5'd0),
+			.q_b_o     (bank_q[b])
+		);
+	end
+endgenerate
 
 endmodule

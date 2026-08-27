@@ -184,11 +184,12 @@ module maria(
 					pclk <= 1;
 			end
 
-			if (pal_counter == 8'd109) begin
+			if (!reset && PAL && pal_counter == 8'd109) begin
 				pal_counter <= 8'd0;
 				mclk0 <= 1'b0;
 				mclk1 <= 1'b0;
 			end else begin
+				pal_counter <= (!reset && PAL) ? pal_counter + 8'd1 : 8'd0;
 				mclk0 <= clk_toggle;
 				mclk1 <= ~clk_toggle;
 				clk_toggle <= ~clk_toggle;

@@ -1,10 +1,5 @@
-// k7800 (c) by Jamie Blanks
-
-// k7800 is licensed under a
-// Creative Commons Attribution-NonCommercial 4.0 International License.
-
-// You should have received a copy of the license along with this
-// work. If not, see http://creativecommons.org/licenses/by-nc/4.0/.
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2019-2026 Jamie Blanks
 
 module cart2600
 (
@@ -12,22 +7,32 @@ module cart2600
 	output logic [7:0]  d_out, // Data bus
 	input    [7:0]  d_in,  // Data bus
 	input    [12:0] a_in,  // Address bus
+	input           rw,
 
 	// Helpers
 	input           clk,        // Master Clock
 	input           reset,      // System warm reset
 	input           ce,         // Original system clock enable (~3.579mhz) used to divide into crystals
 	input           phi1,       // CPU Phase 1 Signal (used for FE to catch data at the right moment)
+	input           phi2,
 	output   [7:0]  oe,         // Output Enable mask
 	input    [7:0]  open_bus,   // Input open bus to use when not driving data bus (Obselete, use oe)
 
 	// Autodetect info
 	input           sc,         // Superchip Enable
 	input    [4:0]  mapper,     // Bankswitching type (ie Mapper)
+	input    [2:0]  mapper_revision,
+	input           cdf_ldx,
+	input           cdf_ldy,
+	input           cdf_fetch_offset_enable,
+	input    [7:0]  cdf_fetch_offset,
+	input   [31:0]  cdfj_entry,
+	input   [31:0]  cdfj_stack,
+	input   [15:0]  arm_audio_size_addr,
 	
 	// SDRAM ROM storage interface
 	input    [7:0]  rom_do,     // Incoming ROM data from the sdram
-	input   [18:0]  rom_size,   // Full rom size for address masking
+	input   [31:0]  rom_size,   // Full rom size for address masking
 	output  [18:0]  rom_a,      // Outgoing absolute rom address for image.
 	output          rom_read,   // Initiate read from SDRAM
 	
@@ -36,6 +41,76 @@ module cart2600
 	output          cartram_rd,
 	output   [7:0]  cartram_wrdata,
 	input    [7:0]  cartram_data,
+	input           clk_arm,
+	input           arm_cartram_en,
+	input           arm_cartram_write,
+	input           arm_cartram_accepted,
+	input   [14:0]  arm_cartram_addr,
+	input   [31:0]  arm_cartram_wdata,
+	input    [3:0]  arm_cartram_wstrb,
+	input   [31:0]  cartram_word_data,
+	input           load_start,
+	input   [24:0]  load_addr,
+	input           load_valid,
+	input    [7:0]  load_data,
+	input           load_end,
+	input   [15:0]  mapper_ram_size,
+	output          mapper_init_busy,
+	output          mapper_dma_request,
+	output          mapper_dma_fill,
+	output  [24:0]  mapper_dma_source,
+	output  [16:0]  mapper_dma_dest,
+	output  [17:0]  mapper_dma_count,
+	output   [7:0]  mapper_dma_value,
+	input           mapper_dma_ready,
+	input           mapper_dma_done,
+	output          mapper_wb_en,
+	output          mapper_wb_write,
+	output  [14:0]  mapper_wb_addr,
+	output  [31:0]  mapper_wb_wdata,
+	output   [3:0]  mapper_wb_wstrb,
+	input           mapper_wb_accepted,
+	output          fa2_nvram_request,
+	output          fa2_nvram_write,
+	output   [7:0]  fa2_nvram_addr,
+	output   [7:0]  fa2_nvram_wdata,
+	input    [7:0]  fa2_nvram_rdata,
+	input           fa2_nvram_ready,
+	output          fa2_nvram_dirty,
+
+	output          arm_call_request,
+	output  [31:0]  arm_call_entry,
+	output  [31:0]  arm_call_stack,
+	output          arm_call_thumb,
+	input           arm_call_ready,
+	input           arm_call_done,
+	output  [31:0]  arm_audio_counter0,
+	output  [31:0]  arm_audio_counter1,
+	output  [31:0]  arm_audio_counter2,
+	output  [31:0]  arm_audio_frequency0,
+	output  [31:0]  arm_audio_frequency1,
+	output  [31:0]  arm_audio_frequency2,
+	input   [31:0]  arm_audio_counter0_return,
+	input   [31:0]  arm_audio_counter1_return,
+	input   [31:0]  arm_audio_counter2_return,
+	input   [31:0]  arm_audio_frequency0_return,
+	input   [31:0]  arm_audio_frequency1_return,
+	input   [31:0]  arm_audio_frequency2_return,
+	output          arm_sample_request,
+	output  [24:0]  arm_sample_addr,
+	input           arm_sample_ready,
+	input           arm_sample_done,
+	input    [7:0]  arm_sample_data,
+	output          bus_stuff_valid,
+	output   [7:0]  bus_stuff_data,
+
+	output          dpc_service_request,
+	output          dpc_service_fill,
+	output  [18:0]  dpc_service_source,
+	output  [14:0]  dpc_service_dest,
+	output   [7:0]  dpc_service_count,
+	output   [7:0]  dpc_service_value,
+	input           dpc_service_ready,
 
 	// Tape Signals
 	output          tape_audio, // Tape audio output
@@ -67,9 +142,10 @@ module cart2600
 	logic [17:0] sel_ram_a;
 	logic [18:0] rom_mask;
 
-	assign rom_mask = rom_size - 1'd1;
+	assign rom_mask = rom_size[18:0] - 1'd1;
 	assign rom_read = mapper == BANKAR ? ar_read : ~address_change;
-	wire is_bad_game = mapper == BANKDPCP || mapper == BANKCDF;
+	wire is_bad_game = mapper == BANKELF ||
+		(mapper == BANKBUS && mapper_revision == 3'd0);
 
 	// Handle unsupportable ARM mappers :(
 	spram #(
@@ -122,6 +198,16 @@ module cart2600
 	// design does not reproduce that issue.
 	wire address_change = old_ain != a_in;
 
+	// High from the clock edge that took this access until the address moves
+	// on, which is what closes the cartridge RAM write strobe above.
+	logic access_taken;
+	always @(posedge clk) begin
+		if (reset || address_change)
+			access_taken <= 1'b0;
+		else if (phi2)
+			access_taken <= 1'b1;
+	end
+
 	always @(posedge clk) begin :reset_2600_cart
 		old_ain <= a_in;
 	end
@@ -135,26 +221,419 @@ module cart2600
 	assign ram_a[BANKCTY]         = ram_a[BANKF4];
 	assign rom_addr[BANKCTY]      = rom_addr[BANKF4];
 
-	// CDF and DPC+ arm code won't run here
-	assign direct_do[BANKCDF]     = bg_data;
-	assign flags_out[BANKCDF]     = 16'd1;
-	assign out_en[BANKCDF]        = 8'hFF;
-	assign ram_sel[BANKCDF]       = 0;
-	assign ram_rw[BANKCDF]        = 1;
-	assign ram_a[BANKCDF]         = '0;
-	assign rom_addr[BANKCDF]      = '0;
+	logic [5:0] cdf_table_index;
+	logic [5:0] bus_pointer_index;
+	logic [5:0] bus_increment_index;
+	logic [5:0] table_pointer_index;
+	logic [5:0] table_increment_index;
+	logic [31:0] table_pointer;
+	logic [31:0] table_increment;
+	logic [14:0] table_pointer_base;
+	logic [14:0] table_increment_base;
+	logic [14:0] table_map_base;
+	logic [5:0] table_stream_count;
+	logic cdf_pointer_update;
+	logic [5:0] cdf_pointer_update_index;
+	logic [31:0] cdf_pointer_update_value;
+	logic bus_pointer_update;
+	logic [5:0] bus_pointer_update_index;
+	logic [31:0] bus_pointer_update_value;
+	logic bus_map_update;
+	logic bus_map_update_selected;
+	logic [5:0] bus_map_update_index;
+	logic [31:0] bus_map_update_value;
+	logic bus_stuff_valid_raw;
+	logic [7:0] bus_stuff_data_raw;
+	logic table_pointer_write;
+	logic [5:0] table_pointer_write_index;
+	logic [31:0] table_pointer_write_value;
+	logic [1:0] table_family;
+	logic [1:0] init_family;
+	logic init_ram_en;
+	logic [16:0] init_ram_addr;
+	logic init_table_pointer_write;
+	logic [5:0] init_table_pointer_index;
+	logic [31:0] init_table_pointer_wdata;
+	logic init_table_increment_write;
+	logic [5:0] init_table_increment_index;
+	logic [31:0] init_table_increment_wdata;
+	logic init_table_map_write;
+	logic [5:0] init_table_map_index;
+	logic [31:0] init_table_map_wdata;
+	logic mapper_wb_idle;
+	logic mapper_call_ready;
+	logic cdf_ram_en;
+	logic cdf_ram_write;
+	logic [14:0] cdf_ram_addr;
+	logic [7:0] cdf_ram_wdata;
+	logic bus_ram_en;
+	logic bus_ram_write;
+	logic [14:0] bus_ram_addr;
+	logic [7:0] bus_ram_wdata;
+	logic dpc_call_request;
+	logic [31:0] dpc_call_entry;
+	logic [31:0] dpc_call_stack;
+	logic dpc_call_thumb;
+	logic dpc_service_request_raw;
+	logic fa2_nvram_request_raw;
+	logic fa2_nvram_write_raw;
+	logic [7:0] fa2_nvram_addr_raw;
+	logic [7:0] fa2_nvram_wdata_raw;
+	logic fa2_nvram_dirty_raw;
+	logic cdf_call_request;
+	logic [31:0] cdf_call_entry;
+	logic [31:0] cdf_call_stack;
+	logic cdf_call_thumb;
+	logic bus_call_request;
+	logic [31:0] bus_call_entry;
+	logic [31:0] bus_call_stack;
+	logic bus_call_thumb;
+	logic [6:0] dpc_audio_waveform0;
+	logic [6:0] dpc_audio_waveform1;
+	logic [6:0] dpc_audio_waveform2;
+	logic dpc_audio_note_write;
+	logic [1:0] dpc_audio_note_voice;
+	logic [7:0] dpc_audio_note_value;
+	logic bus_digital_audio;
+	logic cdf_digital_audio;
+	logic [7:0] arm_audio_amplitude;
+	logic cdf_fast_jump_valid;
+	logic audio_ram_en;
+	logic [16:0] audio_ram_addr;
+	logic audio_ram_grant;
+	logic load_end_d = 1'b0;
 
-	assign direct_do[BANKDPCP]    = bg_data;
-	assign flags_out[BANKDPCP]    = 16'd1;
-	assign out_en[BANKDPCP]       = 8'hFF;
-	assign ram_sel[BANKDPCP]      = 0;
-	assign ram_rw[BANKDPCP]       = 1;
-	assign ram_a[BANKDPCP]        = '0;
-	assign rom_addr[BANKDPCP]     = '0;
+	always_ff @(posedge clk) begin
+		if (load_start)
+			load_end_d <= 1'b0;
+		else
+			load_end_d <= load_end;
+	end
 
-	assign cartram_addr = sel_ram_a;
-	assign cartram_wr = sel_ram_sel && ~sel_ram_rw && ~phi1 && ~address_change;
-	assign cartram_rd = sel_ram_sel &&  sel_ram_rw && ~phi1 && ~address_change;
+	assign table_family = mapper == BANKBUS ? 2'd1 :
+		(mapper == BANKCDF ? 2'd2 : 2'd0);
+	assign bus_map_update_selected = bus_map_update && mapper == BANKBUS;
+	assign bus_stuff_valid = bus_stuff_valid_raw && mapper == BANKBUS;
+	assign bus_stuff_data = bus_stuff_data_raw;
+	assign dpc_service_request = dpc_service_request_raw && mapper == BANKDPCP;
+	assign fa2_nvram_request = fa2_nvram_request_raw && mapper == BANKFA2;
+	assign fa2_nvram_write = fa2_nvram_write_raw;
+	assign fa2_nvram_addr = fa2_nvram_addr_raw;
+	assign fa2_nvram_wdata = fa2_nvram_wdata_raw;
+	assign fa2_nvram_dirty = fa2_nvram_dirty_raw && mapper == BANKFA2;
+	assign init_family = mapper == BANKDPCP ? 2'd1 :
+		(mapper == BANKBUS ? 2'd2 :
+		(mapper == BANKCDF ? 2'd3 : 2'd0));
+	assign mapper_call_ready = arm_call_ready && mapper_wb_idle &&
+		!mapper_init_busy;
+	assign table_pointer_index = mapper == BANKCDF ?
+		cdf_table_index : bus_pointer_index;
+	assign table_increment_index = mapper == BANKCDF ?
+		cdf_table_index : bus_increment_index;
+	assign table_pointer_write =
+		(mapper == BANKCDF && cdf_pointer_update) ||
+		(mapper == BANKBUS && bus_pointer_update);
+	assign table_pointer_write_index = mapper == BANKCDF ?
+		cdf_pointer_update_index : bus_pointer_update_index;
+	assign table_pointer_write_value = mapper == BANKCDF ?
+		cdf_pointer_update_value : bus_pointer_update_value;
+
+	arm_mapper_tables stream_tables (
+		.clk_sys                (clk),
+		.family                 (table_family),
+		.revision               (mapper_revision),
+		.pointer_lookup_index   (table_pointer_index),
+		.increment_lookup_index (table_increment_index),
+		.pointer                (table_pointer),
+		.increment              (table_increment),
+		.pointer_base           (table_pointer_base),
+		.increment_base         (table_increment_base),
+		.map_base               (table_map_base),
+		.stream_count           (table_stream_count),
+		.sys_pointer_write      (init_table_pointer_write || table_pointer_write),
+		.sys_pointer_index      (init_table_pointer_write ?
+			init_table_pointer_index : table_pointer_write_index),
+		.sys_pointer_wdata      (init_table_pointer_write ?
+			init_table_pointer_wdata : table_pointer_write_value),
+		.sys_increment_write    (init_table_increment_write),
+		.sys_increment_index    (init_table_increment_index),
+		.sys_increment_wdata    (init_table_increment_wdata),
+		.sys_map_write          (init_table_map_write || bus_map_update_selected),
+		.sys_map_index          (init_table_map_write ?
+			init_table_map_index : bus_map_update_index),
+		.sys_map_wdata          (init_table_map_write ?
+			init_table_map_wdata : bus_map_update_value),
+		.clk_arm,
+		.arm_write              (arm_cartram_en && arm_cartram_write),
+		.arm_accepted           (arm_cartram_accepted),
+		.arm_addr               (arm_cartram_addr),
+		.arm_wdata              (arm_cartram_wdata),
+		.arm_wstrb              (arm_cartram_wstrb)
+	);
+
+	arm_mapper_ram_init ram_init (
+		.clk_sys               (clk),
+		.mapper_reset          (reset),
+		.load_start,
+		.load_end              (load_end_d),
+		.family                (init_family),
+		.revision              (mapper_revision),
+		.mapper_ram_size,
+		.busy                  (mapper_init_busy),
+		.dma_request           (mapper_dma_request),
+		.dma_fill              (mapper_dma_fill),
+		.dma_source            (mapper_dma_source),
+		.dma_dest              (mapper_dma_dest),
+		.dma_count             (mapper_dma_count),
+		.dma_value             (mapper_dma_value),
+		.dma_ready             (mapper_dma_ready),
+		.dma_done              (mapper_dma_done),
+		.ram_en                (init_ram_en),
+		.ram_addr              (init_ram_addr),
+		.ram_word_rdata        (cartram_word_data),
+		.table_pointer_write   (init_table_pointer_write),
+		.table_pointer_index   (init_table_pointer_index),
+		.table_pointer_wdata   (init_table_pointer_wdata),
+		.table_increment_write (init_table_increment_write),
+		.table_increment_index (init_table_increment_index),
+		.table_increment_wdata (init_table_increment_wdata),
+		.table_map_write       (init_table_map_write),
+		.table_map_index       (init_table_map_index),
+		.table_map_wdata       (init_table_map_wdata)
+	);
+
+	arm_mapper_writeback table_writeback (
+		.clk_sys               (clk),
+		.reset_sys             (reset),
+		.pointer_write         (table_pointer_write),
+		.pointer_addr          (table_pointer_base +
+			{9'b0, table_pointer_write_index}),
+		.pointer_wdata         (table_pointer_write_value),
+		.map_write             (bus_map_update_selected),
+		.map_addr              (table_map_base + {9'b0, bus_map_update_index}),
+		.map_wdata             (bus_map_update_value),
+		.idle                  (mapper_wb_idle),
+		.clk_arm,
+		.reset_arm             (reset),
+		.ram_en                (mapper_wb_en),
+		.ram_write             (mapper_wb_write),
+		.ram_addr              (mapper_wb_addr),
+		.ram_wdata             (mapper_wb_wdata),
+		.ram_wstrb             (mapper_wb_wstrb),
+		.ram_accepted          (mapper_wb_accepted)
+	);
+
+	arm_mapper_audio mapper_audio (
+		.clk                    (clk),
+		.reset,
+		.family                 (init_family),
+		.revision               (mapper_revision[1:0]),
+		.rom_size,
+		.mapper_ram_size,
+		.audio_size_addr        (arm_audio_size_addr),
+		.bus_digital_audio,
+		.cdf_digital_audio,
+		.dpc_waveform0          (dpc_audio_waveform0),
+		.dpc_waveform1          (dpc_audio_waveform1),
+		.dpc_waveform2          (dpc_audio_waveform2),
+		.dpc_note_write         (dpc_audio_note_write),
+		.dpc_note_voice         (dpc_audio_note_voice),
+		.dpc_note_value         (dpc_audio_note_value),
+		.call_launch            (arm_call_request),
+		.call_done              (arm_call_done),
+		.counter0_return        (arm_audio_counter0_return),
+		.counter1_return        (arm_audio_counter1_return),
+		.counter2_return        (arm_audio_counter2_return),
+		.frequency0_return      (arm_audio_frequency0_return),
+		.frequency1_return      (arm_audio_frequency1_return),
+		.frequency2_return      (arm_audio_frequency2_return),
+		.counter0               (arm_audio_counter0),
+		.counter1               (arm_audio_counter1),
+		.counter2               (arm_audio_counter2),
+		.frequency0             (arm_audio_frequency0),
+		.frequency1             (arm_audio_frequency1),
+		.frequency2             (arm_audio_frequency2),
+		.ram_en                 (audio_ram_en),
+		.ram_addr               (audio_ram_addr),
+		.ram_grant              (audio_ram_grant),
+		.ram_byte_data          (cartram_data),
+		.ram_word_data          (cartram_word_data),
+		.rom_request            (arm_sample_request),
+		.rom_addr               (arm_sample_addr),
+		.rom_ready              (arm_sample_ready),
+		.rom_done               (arm_sample_done),
+		.rom_data               (arm_sample_data),
+		.amplitude              (arm_audio_amplitude)
+	);
+
+	mapper_dpcplus dpcplus (
+		.clk,
+		.reset                  (reset || mapper != BANKDPCP),
+		.access                 (phi2),
+		.rw,
+		.a_in,
+		.d_in,
+		.rom_data               (rom_do),
+		.stable_fractional      (mapper_revision[0]),
+		.d_out                  (direct_do[BANKDPCP]),
+		.flags_out              (flags_out[BANKDPCP]),
+		.oe                     (out_en[BANKDPCP]),
+		.rom_a                  (rom_addr[BANKDPCP]),
+		.ram_sel                (ram_sel[BANKDPCP]),
+		.ram_rw                 (ram_rw[BANKDPCP]),
+		.ram_a                  (ram_a[BANKDPCP]),
+		.ram_data               (cartram_data),
+		.amplitude              (arm_audio_amplitude),
+		.audio_waveform0        (dpc_audio_waveform0),
+		.audio_waveform1        (dpc_audio_waveform1),
+		.audio_waveform2        (dpc_audio_waveform2),
+		.audio_note_write       (dpc_audio_note_write),
+		.audio_note_voice       (dpc_audio_note_voice),
+		.audio_note_value       (dpc_audio_note_value),
+		.call_request           (dpc_call_request),
+		.call_entry             (dpc_call_entry),
+		.call_stack             (dpc_call_stack),
+		.call_thumb             (dpc_call_thumb),
+		.call_ready             (mapper_call_ready),
+		.service_request        (dpc_service_request_raw),
+		.service_fill           (dpc_service_fill),
+		.service_source         (dpc_service_source),
+		.service_dest           (dpc_service_dest),
+		.service_count          (dpc_service_count),
+		.service_value          (dpc_service_value),
+		.service_ready          (dpc_service_ready)
+	);
+
+	mapper_cdf cdf (
+		.clk,
+		.reset                   (reset || mapper != BANKCDF),
+		.access                 (phi2),
+		.rw,
+		.a_in,
+		.d_in,
+		.rom_data               (rom_do),
+		.revision               (mapper_revision[1:0]),
+		.enable_ldx             (cdf_ldx),
+		.enable_ldy             (cdf_ldy),
+		.fetch_offset_enable    (cdf_fetch_offset_enable),
+		.fetch_offset           (cdf_fetch_offset),
+		.fast_jump_valid        (cdf_fast_jump_valid),
+		.d_out                  (direct_do[BANKCDF]),
+		.flags_out              (flags_out[BANKCDF]),
+		.oe                     (out_en[BANKCDF]),
+		.rom_a                  (rom_addr[BANKCDF]),
+		.table_index            (cdf_table_index),
+		.table_pointer,
+		.table_increment        (table_increment[15:0]),
+		.pointer_update         (cdf_pointer_update),
+		.pointer_update_index   (cdf_pointer_update_index),
+		.pointer_update_value   (cdf_pointer_update_value),
+		.ram_en                 (cdf_ram_en),
+		.ram_write              (cdf_ram_write),
+		.ram_addr               (cdf_ram_addr),
+		.ram_wdata              (cdf_ram_wdata),
+		.ram_rdata              (cartram_data),
+		.amplitude              (arm_audio_amplitude),
+		.digital_audio          (cdf_digital_audio),
+		.call_request           (cdf_call_request),
+		.call_entry             (cdf_call_entry),
+		.call_stack             (cdf_call_stack),
+		.call_thumb             (cdf_call_thumb),
+		.call_ready             (mapper_call_ready),
+		.cdfj_entry,
+		.cdfj_stack
+	);
+
+	cdf_fastjump_table cdf_jump_table (
+		.clk_sys    (clk),
+		.load_start,
+		.load_addr,
+		.load_valid,
+		.load_data,
+		.query_addr (rom_addr[BANKCDF][14:0]),
+		.query_valid(cdf_fast_jump_valid)
+	);
+
+	assign ram_sel[BANKCDF] = cdf_ram_en;
+	assign ram_rw[BANKCDF] = !cdf_ram_write;
+	assign ram_a[BANKCDF] = {3'b0, cdf_ram_addr};
+
+	mapper_bus bus (
+		.clk,
+		.reset                   (reset || mapper != BANKBUS),
+		.access                 (phi2),
+		.rw,
+		.a_in,
+		.d_in,
+		.rom_data               (rom_do),
+		.revision               (mapper_revision[1:0]),
+		.supported              (),
+		.d_out                  (direct_do[BANKBUS]),
+		.flags_out              (flags_out[BANKBUS]),
+		.oe                     (out_en[BANKBUS]),
+		.rom_a                  (rom_addr[BANKBUS]),
+		.pointer_lookup_index   (bus_pointer_index),
+		.increment_lookup_index (bus_increment_index),
+		.table_pointer,
+		.table_increment,
+		.pointer_update         (bus_pointer_update),
+		.pointer_update_index   (bus_pointer_update_index),
+		.pointer_update_value   (bus_pointer_update_value),
+		.map_update             (bus_map_update),
+		.map_update_index       (bus_map_update_index),
+		.map_update_value       (bus_map_update_value),
+		.ram_en                 (bus_ram_en),
+		.ram_write              (bus_ram_write),
+		.ram_addr               (bus_ram_addr),
+		.ram_wdata              (bus_ram_wdata),
+		.ram_rdata              (cartram_data),
+		.amplitude              (arm_audio_amplitude),
+		.digital_audio          (bus_digital_audio),
+		.stuff_valid            (bus_stuff_valid_raw),
+		.stuff_data             (bus_stuff_data_raw),
+		.call_request           (bus_call_request),
+		.call_entry             (bus_call_entry),
+		.call_stack             (bus_call_stack),
+		.call_thumb             (bus_call_thumb),
+		.call_ready             (mapper_call_ready)
+	);
+
+	assign ram_sel[BANKBUS] = bus_ram_en;
+	assign ram_rw[BANKBUS] = !bus_ram_write;
+	assign ram_a[BANKBUS] = {3'b0, bus_ram_addr};
+
+	assign arm_call_request = mapper == BANKDPCP ? dpc_call_request :
+		(mapper == BANKCDF ? cdf_call_request :
+		(mapper == BANKBUS ? bus_call_request : 1'b0));
+	assign arm_call_entry = mapper == BANKDPCP ? dpc_call_entry :
+		(mapper == BANKCDF ? cdf_call_entry : bus_call_entry);
+	assign arm_call_stack = mapper == BANKDPCP ? dpc_call_stack :
+		(mapper == BANKCDF ? cdf_call_stack : bus_call_stack);
+	assign arm_call_thumb = mapper == BANKDPCP ? dpc_call_thumb :
+		(mapper == BANKCDF ? cdf_call_thumb : bus_call_thumb);
+
+	// ELF is not an ARM7 mapper; retain the explicit unsupported screen.
+	assign direct_do[BANKELF]     = bg_data;
+	assign flags_out[BANKELF]     = 16'd1;
+	assign out_en[BANKELF]        = 8'hFF;
+	assign ram_sel[BANKELF]       = 0;
+	assign ram_rw[BANKELF]        = 1;
+	assign ram_a[BANKELF]         = '0;
+	assign rom_addr[BANKELF]      = '0;
+
+	assign audio_ram_grant = audio_ram_en && !init_ram_en && !sel_ram_sel;
+	assign cartram_addr = init_ram_en ? {1'b0, init_ram_addr} :
+		(sel_ram_sel ? sel_ram_a : {1'b0, audio_ram_addr});
+	// One access, one write. The strobe is a level that stands for most of the
+	// 6507 cycle, so a mapper that steps its RAM address at phi2 - DPC+'s
+	// DFxWRITE and DFxPUSH move their counter there, CDF's DSWRITE its pointer
+	// - had the same byte written a second time at the next address. Chaotic
+	// Grill writes the display image 4,500 times a screen and every one left a
+	// stray byte behind it.
+	assign cartram_wr = !init_ram_en && sel_ram_sel && ~sel_ram_rw &&
+		~phi1 && ~address_change && ~access_taken;
+	assign cartram_rd = init_ram_en || audio_ram_grant ||
+		(sel_ram_sel && sel_ram_rw && ~phi1 && ~address_change);
 	assign cartram_wrdata = d_in;
 	assign cr_do = cartram_data;
 
@@ -164,7 +643,6 @@ module cart2600
 	// MC   -- Megacart (doesn't seem like it works on real hardware, also no games)
 	// X07  -- X07 Atariage (seems impossible, also cant find any games with it)
 	// 4A50 -- 4A50 (never found a game with this)
-	// FA2  -- FA2 (some kind of flash cart abstraction? Only one homebrew uses)
 
 	mapper_none mapper_none
 	(
@@ -321,6 +799,33 @@ module cart2600
 		.rom_a      (rom_addr[BANKFA])
 	);
 
+	mapper_fa2 mapper_FA2
+	(
+		.clk           (clk),
+		.reset         (reset || mapper != BANKFA2),
+		.ce            (ce),
+		.phi1          (phi1),
+		.a_change      (address_change),
+		.a_in          (a_in),
+		.d_in          (d_in),
+		.rom_data      (rom_do),
+		.rom_size      (rom_size),
+		.d_out         (direct_do[BANKFA2]),
+		.flags_out     (flags_out[BANKFA2]),
+		.oe            (out_en[BANKFA2]),
+		.rom_a         (rom_addr[BANKFA2]),
+		.nvram_request (fa2_nvram_request_raw),
+		.nvram_write   (fa2_nvram_write_raw),
+		.nvram_addr    (fa2_nvram_addr_raw),
+		.nvram_wdata   (fa2_nvram_wdata_raw),
+		.nvram_rdata   (fa2_nvram_rdata),
+		.nvram_ready   (fa2_nvram_ready),
+		.nvram_dirty   (fa2_nvram_dirty_raw)
+	);
+	assign ram_sel[BANKFA2] = 1'b0;
+	assign ram_rw[BANKFA2] = 1'b1;
+	assign ram_a[BANKFA2] = 18'd0;
+
 	mapper_CV mapper_CV
 	(
 		.clk        (clk),
@@ -442,7 +947,7 @@ module cart2600
 		.ce         (ce),
 		.ar_read    (ar_read),
 		.rom_do     (rom_do),
-		.rom_size   (rom_size),
+		.rom_size   (rom_size[18:0]),
 		.audio_data (tape_audio),
 		.tape_in    (tape_in),
 		.fix_sc_cs  (fix_sc_cs)
@@ -480,7 +985,7 @@ module cart2600
 		.ram_rw     (ram_rw[BANK3E]),
 		.ram_a      (ram_a[BANK3E]),
 		.rom_a      (rom_addr[BANK3E]),
-		.rom_size   (rom_size)
+		.rom_size   (rom_size[18:0])
 	);
 
 	mapper_SB mapper_SB

@@ -2,67 +2,274 @@ typedef enum bit[4:0] {
 	BANK00, BANKF8, BANKF6, BANKFE, BANKE0,   BANK3F,   BANKF4,  BANKP2,
 	BANKFA, BANKCV, BANK2K, BANKUA, BANKE7,   BANKF0,   BANK32,  BANKAR,
 	BANK3E, BANKSB, BANKWD, BANKEF, BANKJANE, BANKDPCP, BANKCTY, BANKCDF,
-	BANKEND
+	BANKBUS, BANKFA2, BANKELF, BANKEND
 } bss_type ;
 
 module detect2600
 (
 	input clk,
-	input reset,
-	input [15:0] addr,
-	input enable,
+	input load_start,
+	input [24:0] load_addr,
+	input load_valid,
+	input load_end,
 	input [31:0] cart_size,
 	input [7:0] data,
 	output reg [4:0] force_bs,
-	output reg sc
+	output reg sc,
+	output reg [2:0] mapper_revision,
+	output reg cdf_ldx,
+	output reg cdf_ldy,
+	output reg cdf_fetch_offset_enable,
+	output reg [7:0] cdf_fetch_offset,
+	output reg [31:0] cdfj_entry,
+	output reg [31:0] cdfj_stack,
+	output reg [15:0] arm_audio_size_addr
 );
 
+wire reset = load_start;
+wire [24:0] addr = load_addr;
+wire enable = load_valid;
 wire hasMatch3F;
+wire hasMatchBUS;
+
+reg [31:0] elf_window;
+reg elf_magic;
+reg elf_endian;
+reg elf_type;
+reg elf_machine;
+
+reg [31:0] revision_window;
+reg [31:0] revision_word_1;
+reg [31:0] revision_word_2;
+reg [2:0] cdf0_count;
+reg [2:0] cdf1_count;
+reg [2:0] cdfj_count;
+reg cdfj_plus;
+reg bus_word_seen;
+reg [1:0] bus_revision;
+reg [31:0] dpc_driver_crc;
+reg audio_size_scan;
+reg [4:0] audio_size_words;
+reg [31:0] fa2_loader_window;
+reg fa2_loader;
+reg fa2_padding_zero;
+
+wire [31:0] next_revision_window = load_addr[1:0] == 2'd0 ?
+	{24'b0, data} : load_addr[1:0] == 2'd1 ?
+	{16'b0, data, revision_window[7:0]} : load_addr[1:0] == 2'd2 ?
+	{8'b0, data, revision_window[15:0]} :
+	{data, revision_window[23:0]};
+
+wire [31:0] next_elf_window = {elf_window[23:0], data};
+wire [31:0] next_fa2_loader_window = load_start ? {24'd0, data} :
+	{fa2_loader_window[23:0], data};
+wire hasMatchELF = cart_size >= 32'd52 && elf_magic && elf_endian &&
+	elf_type && elf_machine;
+wire cdf_size = cart_size == 32'd32768 || cart_size == 32'd65536 ||
+	cart_size == 32'd131072 || cart_size == 32'd262144 ||
+	cart_size == 32'd524288;
+wire hasMatchDEVC;
 
 always @(posedge clk) begin
-sc<=0;
-if (hasMatchFE) force_bs<=BANKFE;
-else if (hasMatchE0 && cart_size=='d8192) force_bs<=BANKE0;
-else if (hasMatch3E && cart_size>'d4096)  force_bs<=BANK3E;
-else if (hasMatch3F && cart_size>'d4096) force_bs<=BANK3F;
-else if (hasMatchSB && cart_size>='d131072) force_bs<=BANKSB;
-else if (hasMatchEF && cart_size=='d65536 ) begin
-	force_bs<=BANKEF;
-	sc <= has_sc;
+	if (load_start) begin
+		fa2_loader_window <= '0;
+		fa2_loader <= 1'b0;
+		fa2_padding_zero <= 1'b1;
+	end
+
+	if (load_valid) begin
+		fa2_loader_window <= next_fa2_loader_window;
+		if (load_addr < 25'd1024 &&
+			(next_fa2_loader_window == 32'hA0C11FE0 ||
+			 next_fa2_loader_window == 32'h008002E0))
+			fa2_loader <= 1'b1;
+		if (load_addr >= 25'd29696 && load_addr < 25'd32768 && data != 8'd0)
+			fa2_padding_zero <= 1'b0;
+	end
 end
-else if (hasMatchDPCP && cart_size=='d32768) force_bs<=BANKDPCP;
-else if (hasMatchCTY && cart_size=='d32768) force_bs<=BANKCTY;
-else if (hasMatchCTY && cart_size=='d61440) force_bs<=BANKCTY; // F4 banking works for the one game that uses this
-else if (hasMatchCDF && cart_size>='d32768) force_bs<=BANKCDF;
-else if (hasMatchCV) force_bs<=BANKCV;
-else if (hasMatchJANE && cart_size=='d16384) force_bs<=BANKJANE;
-else if (hasMatchE7) force_bs<=BANKE7;
-else if (cart_size == 'h2000 && hasMatchWD ) force_bs<=BANKWD; //  8k 
-else if (cart_size == 'h2000 && hasMatchUA ) force_bs<=BANKUA; //  8k and less
-else if (cart_size == 'h1800) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR 
-else if (cart_size == 'h2100) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR 
-else if (cart_size == 'h4200) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR 
-else if (cart_size == 'h6300) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR 
-else if (cart_size == 'h8400) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR 
-else if (cart_size <= 'h0800) force_bs<=BANK2K; //  2k and less
-else if (cart_size <= 'h1000) force_bs<=BANK00; //  4k and less
-else if (cart_size <= 'h2000) begin 
-	force_bs<=BANKF8; //  8k and less
-        sc <= has_sc;
+
+always @(posedge clk) begin
+	if (load_start) begin
+		elf_window <= '0;
+		elf_magic <= 1'b0;
+		elf_endian <= 1'b0;
+		elf_type <= 1'b0;
+		elf_machine <= 1'b0;
+	end
+
+	if (load_valid) begin
+		elf_window <= load_start ? {24'd0, data} : next_elf_window;
+		if (load_addr <= 25'd7 && next_elf_window == 32'h7F454C46)
+			elf_magic <= 1'b1;
+		if (load_addr == 25'h05)
+			elf_endian <= data == 8'h01;
+		if (load_addr == 25'h10)
+			elf_type <= data == 8'h01;
+		if (load_addr == 25'h12)
+			elf_machine <= data == 8'h28;
+	end
 end
-else if (cart_size >= 'h2800 && cart_size <= 'h2900) force_bs<=BANKP2; // 10k+256 and less, should be > 10k < 10k+256?
-else if (cart_size <= 'h3000) force_bs<=BANKFA; // 12k and less
-else if (cart_size <= 'h4000) begin
-	force_bs<=BANKF6; // 16k and less
-        sc <= has_sc;
+
+// Stella subtypes are encoded in aligned driver words. DPC+ uses a serial
+// first-3-KiB CRC here instead of a parallel MD5 datapath.
+always @(posedge clk) begin
+	if (load_start) begin
+		revision_window <= '0;
+		revision_word_1 <= '0;
+		revision_word_2 <= '0;
+		cdf0_count <= '0;
+		cdf1_count <= '0;
+		cdfj_count <= '0;
+		cdfj_plus <= 1'b0;
+		bus_word_seen <= 1'b0;
+		bus_revision <= 2'd0;
+		dpc_driver_crc <= '0;
+		cdf_ldx <= 1'b0;
+		cdf_ldy <= 1'b0;
+		cdf_fetch_offset_enable <= 1'b0;
+		cdf_fetch_offset <= 8'b0;
+		cdfj_entry <= 32'b0;
+		cdfj_stack <= 32'b0;
+		arm_audio_size_addr <= 16'b0;
+		audio_size_scan <= 1'b0;
+		audio_size_words <= 5'b0;
+	end
+
+	if (load_valid) begin
+		revision_window <= next_revision_window;
+		if (load_addr < 25'd3072)
+			dpc_driver_crc <= nextCRC32_D8(data,
+				load_start ? 32'b0 : dpc_driver_crc);
+
+		if (load_addr[1:0] == 2'b11 && load_addr < 25'd3072) begin
+			revision_word_2 <= revision_word_1;
+			revision_word_1 <= next_revision_window;
+			if (next_revision_window == 32'hE3C55D3E) begin
+				audio_size_scan <= 1'b1;
+				audio_size_words <= 5'd20;
+			end else if (audio_size_scan) begin
+				if (next_revision_window[31:16] == 16'h4000) begin
+					arm_audio_size_addr <= next_revision_window[15:0];
+					audio_size_scan <= 1'b0;
+				end else if (audio_size_words == 5'd1) begin
+					audio_size_scan <= 1'b0;
+				end else begin
+					audio_size_words <= audio_size_words - 5'd1;
+				end
+			end
+			if (load_addr < 25'd2048) begin
+				if (next_revision_window == 32'h135200A2)
+					cdf_ldx <= 1'b1;
+				if (next_revision_window == 32'h135200A0)
+					cdf_ldy <= 1'b1;
+				if ((next_revision_window & 32'hFFFFFF00) == 32'hE2422000) begin
+					cdf_fetch_offset_enable <= 1'b1;
+					cdf_fetch_offset <= next_revision_window[7:0];
+				end
+				if (next_revision_window == 32'h00464443 && cdf0_count < 3)
+					cdf0_count <= cdf0_count + 3'd1;
+				else if (next_revision_window == 32'h4A464443 && cdfj_count < 3)
+					cdfj_count <= cdfj_count + 3'd1;
+				else if (next_revision_window[23:0] == 24'h464443 &&
+					next_revision_window[31:24] != 8'h00 &&
+					next_revision_window[31:24] != 8'h4A && cdf1_count < 3)
+					cdf1_count <= cdf1_count + 3'd1;
+				if (revision_word_2 == 32'h53554C50 &&
+					revision_word_1 == 32'h4A464443 &&
+					next_revision_window == 32'h00000001)
+					cdfj_plus <= 1'b1;
+			end
+
+			if (!bus_word_seen && next_revision_window == 32'h00535542) begin
+				bus_word_seen <= 1'b1;
+				case (load_addr - 25'd3)
+					25'h007F4: bus_revision <= 2'd1;
+					25'h00778: bus_revision <= 2'd2;
+					25'h00770: bus_revision <= 2'd3;
+					default:    bus_revision <= 2'd0;
+				endcase
+			end
+		end
+
+		if (load_addr[1:0] == 2'b11) begin
+			if (load_addr - 25'd3 == 25'h017F4)
+				cdfj_stack <= next_revision_window;
+			if (load_addr - 25'd3 == 25'h017F8)
+				cdfj_entry <= next_revision_window & 32'hFFFFFFFE;
+		end
+	end
 end
-else if (cart_size <= 'h8000) begin
-	force_bs<=BANKF4; // 32k and less
-        sc <= has_sc;
-end
-else if (cart_size < 'h10000) force_bs<=BANK32; // 64k and less
-else if (cart_size == 'h10000) force_bs<=BANKF0; // 64k  - there are a few checks here
-else force_bs<=0;
+
+always @(posedge clk) begin
+	if (load_start) begin
+		force_bs <= BANK00;
+		sc <= 1'b0;
+		mapper_revision <= 3'd0;
+	end else if (load_end) begin
+		sc <= 1'b0;
+		mapper_revision <= 3'd0;
+		if (hasMatchELF) force_bs<=BANKELF;
+		else if ((cart_size=='d24576 || cart_size=='d28672) && !hasMatchDEVC)
+			force_bs<=BANKFA2;
+		else if (cart_size=='d29696) force_bs<=fa2_loader ? BANKFA2 : BANKDPCP;
+		else if (hasMatchCTY && (cart_size=='d32768 || cart_size=='d61440)) force_bs<=BANKCTY;
+		else if (hasMatchCDF && cdf_size) begin
+			force_bs<=BANKCDF;
+			mapper_revision <= cdfj_plus ? 3'd3 :
+				(cdfj_count >= 3 ? 3'd2 : (cdf0_count >= 3 ? 3'd0 : 3'd1));
+		end
+		else if (hasMatchDPCP && cart_size=='d32768) begin
+			force_bs<=BANKDPCP;
+			mapper_revision <= dpc_driver_crc == 32'hA08CFB13 ? 3'd1 : 3'd0;
+		end
+		else if (cart_size=='d32768 && has_sc) begin
+			force_bs<=BANKF4;
+			sc<=1'b1;
+		end
+		else if (hasMatchFE && cart_size=='d8192) force_bs<=BANKFE;
+		else if (hasMatchE0 && cart_size=='d8192) force_bs<=BANKE0;
+		else if (hasMatch3E && cart_size>'d4096)  force_bs<=BANK3E;
+		else if (hasMatch3F && cart_size>'d4096) force_bs<=BANK3F;
+		else if (hasMatchBUS && cart_size=='d32768) begin
+			force_bs<=BANKBUS;
+			mapper_revision <= {1'b0, bus_revision};
+		end
+		else if (cart_size=='d32768 && fa2_padding_zero && !has_sc) force_bs<=BANKFA2;
+		else if (hasMatchSB && cart_size>='d131072) force_bs<=BANKSB;
+		else if (hasMatchEF && cart_size=='d65536 ) begin
+			force_bs<=BANKEF;
+			sc <= has_sc;
+		end
+		else if (hasMatchCV) force_bs<=BANKCV;
+		else if (hasMatchJANE && cart_size=='d16384) force_bs<=BANKJANE;
+		else if (hasMatchE7) force_bs<=BANKE7;
+		else if (cart_size == 'h2000 && hasMatchWD ) force_bs<=BANKWD; //  8k
+		else if (cart_size == 'h2000 && hasMatchUA ) force_bs<=BANKUA; //  8k and less
+		else if (cart_size == 'h1800) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
+		else if (cart_size == 'h2100) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
+		else if (cart_size == 'h4200) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
+		else if (cart_size == 'h6300) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
+		else if (cart_size == 'h8400) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
+		else if (cart_size <= 'h0800) force_bs<=BANK2K; //  2k and less
+		else if (cart_size <= 'h1000) force_bs<=BANK00; //  4k and less
+		else if (cart_size <= 'h2000) begin
+			force_bs<=BANKF8; //  8k and less
+			sc <= has_sc;
+		end
+		else if (cart_size >= 'h2800 && cart_size <= 'h2900) force_bs<=BANKP2; // 10k+256 and less, should be > 10k < 10k+256?
+		else if (cart_size <= 'h3000) force_bs<=BANKFA; // 12k and less
+		else if (cart_size <= 'h4000) begin
+			force_bs<=BANKF6; // 16k and less
+			sc <= has_sc;
+		end
+		else if (cart_size <= 'h8000) begin
+			force_bs<=BANKF4; // 32k and less
+			sc <= has_sc;
+		end
+		else if (cart_size < 'h10000) force_bs<=BANK32; // 64k and less
+		else if (cart_size == 'h10000) force_bs<=BANKF0; // 64k  - there are a few checks here
+		else force_bs<=0;
+	end
 
 
 //wire hasMatchFE = (~hasMatchF8) && (hasMatchFE_0 | hasMatchFE_1 | hasMatchFE_2 | hasMatchFE_3 );
@@ -84,16 +291,41 @@ wire hasMatchEF = hasMatchEF_0 | hasMatchEF_1| hasMatchEF_2 | hasMatchEF_3;
     { 0xAD, 0xE0, 0x1F }   // LDA $1FE0
   };
 */
+// One byte history for all the patterns below. Every matcher took the same
+// addr, data, enable and reset, so each was carrying its own copy of the same
+// shift register and its own 25-bit contiguity test - fifty-one of them.
+reg [63:0] match_stream;
+reg [24:0] match_last_addr;
+reg        match_have_addr;
+wire match_contiguous = match_have_addr && addr == match_last_addr + 25'd1;
+// The matchers compare the value the stream is about to take, as they did when
+// each held its own copy.
+wire [63:0] match_next = match_contiguous && !reset ?
+	{match_stream[55:0], data} : {56'b0, data};
+
+always @(posedge clk) begin
+	if (reset) begin
+		match_stream <= '0;
+		match_last_addr <= '0;
+		match_have_addr <= 1'b0;
+	end
+
+	if (enable) begin
+		match_stream <= match_next;
+		match_last_addr <= addr;
+		match_have_addr <= 1'b1;
+	end
+end
+
 match_bytes #(
 	.num_bytes(8'd3),
 	.pattern({ 8'h0C, 8'hE0 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_EF_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchEF_0)
 );
 match_bytes #(
@@ -101,11 +333,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE0 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_EF_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchEF_1)
 );
 match_bytes #(
@@ -113,11 +344,10 @@ match_bytes #(
 	.pattern({ 8'h0C, 8'hE0 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_EF_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchEF_2)
 );
 match_bytes #(
@@ -125,29 +355,52 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE0 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_EF_3(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchEF_3)
 );
 
 //----------------------------
 //  DPC+ detector
 //----------------------------
+match_bytes #(
+	.num_bytes(8'd4),
+	.pattern({ 8'hA9, 8'hFD, 8'h85, 8'h08 }),
+	.needmatches(8'd1)
+	) match_bytes_DEVC(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatchDEVC)
+);
+
 wire hasMatchDPCP;
 match_bytes #(
 	.num_bytes(8'd4),
 	.pattern({ 8'h44, 8'h50 , 8'h43, 8'h2B }),
 	.needmatches(8'd2)
 	) match_bytes_DPCP(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchDPCP)
+);
+
+// BUS ARM drivers contain the ASCII marker twice.
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h42, 8'h55, 8'h53 }),
+	.needmatches(8'd2)
+	) match_bytes_BUS(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatchBUS)
 );
 //----------------------------
 //  CTY detector
@@ -158,11 +411,10 @@ match_bytes #(
 	.pattern({ 8'h4C, 8'h45 , 8'h4E, 8'h49, 8'h4E }),
 	.needmatches(8'd1)
 	) match_bytes_CTY(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchCTY)
 );
 
@@ -174,11 +426,10 @@ match_bytes #(
 	.pattern({ 8'h43, 8'h44 , 8'h46 }),
 	.needmatches(8'd3)
 	) match_bytes_CDF_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchCDF_1)
 );
 match_bytes #(
@@ -186,11 +437,10 @@ match_bytes #(
 	.pattern({ 8'h50, 8'h4C , 8'h55, 8'h53, 8'h43, 8'h44, 8'h46, 8'h4A }),
 	.needmatches(8'd1)
 	) match_bytes_CDF_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchCDF_2)
 );
 
@@ -244,11 +494,10 @@ match_bytes #(
 	.pattern({ 8'h85, 8'h3F }),
 	.needmatches(8'd2)
 	) match_bytes_3F(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatch3F)
 );
 
@@ -280,11 +529,10 @@ match_bytes #(
 	.pattern({ 8'h85, 8'h3E }),
 	.needmatches(8'd1)
 	) match_bytes_3E_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatch3E_1)
 );
 
@@ -307,11 +555,10 @@ match_bytes #(
 	.pattern({ 8'hA5,8'h39, 8'h4C }),
 	.needmatches(8'd1)
 	) match_bytes_WD_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchWD)
 );
 
@@ -340,11 +587,10 @@ match_bytes #(
 	.pattern({ 8'hBD,8'h00, 8'h08 }),
 	.needmatches(8'd1)
 	) match_bytes_SB_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchSB_1)
 );
 match_bytes #(
@@ -352,11 +598,10 @@ match_bytes #(
 	.pattern({ 8'hAD,8'h00, 8'h08 }),
 	.needmatches(8'd1)
 	) match_bytes_SB_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchSB_2)
 );
 //------------------------------
@@ -395,11 +640,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE2 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E7_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_0)
 );
 match_bytes #(
@@ -407,11 +651,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE5 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E7_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_1)
 );
 match_bytes #(
@@ -419,11 +662,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE5 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E7_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_2)
 );
 match_bytes #(
@@ -431,11 +673,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE7 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E7_3(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_3)
 );
 match_bytes #(
@@ -443,11 +684,10 @@ match_bytes #(
 	.pattern({ 8'h0C, 8'hE7 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E7_4(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_4)
 );
 match_bytes #(
@@ -455,11 +695,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hE7 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E7_5(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_5)
 );
 match_bytes #(
@@ -467,11 +706,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE7 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E7_6(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE7_6)
 );
 
@@ -491,11 +729,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hF1 , 8'hFF, 8'h60 }),
 	.needmatches(8'd1)
 	) match_bytes_JANE(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchJANE)
 );
 
@@ -535,11 +772,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hE0 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E0_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_0)
 );
 match_bytes #(
@@ -547,11 +783,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hE0 , 8'h5F }),
 	.needmatches(8'd1)
 	) match_bytes_E0_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_1)
 );
 match_bytes #(
@@ -559,11 +794,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hE9 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E0_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_2)
 );
 match_bytes #(
@@ -571,11 +805,10 @@ match_bytes #(
 	.pattern({ 8'h0C, 8'hE0 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E0_3(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_3)
 );
 match_bytes #(
@@ -583,11 +816,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE0 , 8'h1F }),
 	.needmatches(8'd1)
 	) match_bytes_E0_4(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_4)
 );
 match_bytes #(
@@ -595,11 +827,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hE9 , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E0_5(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_5)
 );
 match_bytes #(
@@ -607,11 +838,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hED , 8'hFF }),
 	.needmatches(8'd1)
 	) match_bytes_E0_6(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_6)
 );
 match_bytes #(
@@ -619,11 +849,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hF3 , 8'hBF }),
 	.needmatches(8'd1)
 	) match_bytes_E0_7(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchE0_7)
 );
 
@@ -643,11 +872,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hF9 , 8'h1F }),
 	.needmatches(8'd2)
 	) match_bytes_F8_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchF8_0)
 );
 match_bytes #(
@@ -655,11 +883,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hF9 , 8'hFF }),
 	.needmatches(8'd2)
 	) match_bytes_F8_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchF8_1)
 );
 
@@ -669,11 +896,10 @@ match_bytes #(
 	.pattern({ 8'h20, 8'h00 , 8'hD0, 8'hC6 , 8'hC5 }),
 	.needmatches(8'd1)
 	) match_bytes_FE_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchFE_0)
 );
 match_bytes #(
@@ -681,11 +907,10 @@ match_bytes #(
 	.pattern({ 8'h20, 8'hC3 , 8'hF8, 8'hA5 , 8'h82 }),
 	.needmatches(8'd1)
 	) match_bytes_FE_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchFE_1)
 );
 match_bytes #(
@@ -693,11 +918,10 @@ match_bytes #(
 	.pattern({ 8'hD0, 8'hFB , 8'h20, 8'h73 , 8'hFE }),
 	.needmatches(8'd1)
 	) match_bytes_FE_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchFE_2)
 );
 match_bytes #(
@@ -705,11 +929,10 @@ match_bytes #(
 	.pattern({ 8'h20, 8'h00 , 8'hF0, 8'h84 , 8'hD6 }),
 	.needmatches(8'd1)
 	) match_bytes_FE_3(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchFE_3)
 );
 /*
@@ -761,11 +984,10 @@ match_bytes #(
 	.pattern({ 8'h9D, 8'hFF , 8'hF3 }),
 	.needmatches(8'd1)
 	) match_bytes_CV_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchCV_0)
 );
 match_bytes #(
@@ -773,11 +995,10 @@ match_bytes #(
 	.pattern({ 8'h99, 8'h00 , 8'hF4 }),
 	.needmatches(8'd1)
 	) match_bytes_CV_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchCV_1)
 );
 /*
@@ -808,11 +1029,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'h40 , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_0(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_0)
 );
 
@@ -821,11 +1041,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'h40 , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_1(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_1)
 );
 
@@ -835,11 +1054,10 @@ match_bytes #(
 	.pattern({ 8'hBD, 8'h1F , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_2(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_2)
 );
 
@@ -848,11 +1066,10 @@ match_bytes #(
 	.pattern({ 8'h2C, 8'hC0 , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_3(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_3)
 );
 
@@ -861,11 +1078,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hC0 , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_4(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_4)
 );
 
@@ -874,11 +1090,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hC0 , 8'h02 }),
 	.needmatches(8'd1)
 	) match_bytes_UA_5(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_5)
 );
 
@@ -887,11 +1102,10 @@ match_bytes #(
 	.pattern({ 8'h2C, 8'hC0 , 8'h0F }),
 	.needmatches(8'd1)
 	) match_bytes_UA_6(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_6)
 );
 
@@ -900,11 +1114,10 @@ match_bytes #(
 	.pattern({ 8'h2C, 8'hB0 , 8'h0F }),
 	.needmatches(8'd1)
 	) match_bytes_UA_7(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_7)
 );
 
@@ -913,11 +1126,10 @@ match_bytes #(
 	.pattern({ 8'h2C, 8'hC0 , 8'h0F }),
 	.needmatches(8'd1)
 	) match_bytes_UA_8(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_8)
 );
 
@@ -926,11 +1138,10 @@ match_bytes #(
 	.pattern({ 8'h8D, 8'hC0 , 8'h0F }),
 	.needmatches(8'd1)
 	) match_bytes_UA_9(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_9)
 );
 
@@ -939,11 +1150,10 @@ match_bytes #(
 	.pattern({ 8'hAD, 8'hC0 , 8'h0F }),
 	.needmatches(8'd1)
 	) match_bytes_UA_10(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_10)
 );
 
@@ -952,11 +1162,10 @@ match_bytes #(
 	.pattern({ 8'h2C, 8'hC0 , 8'hEF }),
 	.needmatches(8'd1)
 	) match_bytes_UA_11(
-	.addr(addr),
 	.enable(enable),
 	.clk(clk),
 	.reset(reset),
-	.data(data),
+	.stream(match_next),
 	.hasMatch(hasMatchUA_11)
 );
 
@@ -1012,40 +1221,32 @@ bool CartDetector::isProbablySC(const ByteBuffer& image, size_t size)
 
 // grab and save the CRC for the first 128 bytes
 // each 4k check 128 bytes, and fail if CRC doesn't match
-reg [31:0] sc_crc0,sc_crc1,sc_crc2;
+reg [31:0] sc_crc0,sc_crc1;
 reg has_sc;
+wire [11:0] sc_offset = load_addr[11:0];
+wire sc_enable = load_valid;
 
 // 80 - 100
 
 always @(posedge clk) begin
-	if (enable) begin
-		if (addr < 16'h80) begin
-			if (addr==0)
-			begin
-				sc_crc1<=0;
-				has_sc<=0;
-				sc_crc0<=nextCRC32_D8(data,32'b0);
-			end
-			else
-				sc_crc0<=nextCRC32_D8(data,sc_crc0);
-		end
-		else if (addr >= 16'h80 && addr < 16'h100) begin
-			sc_crc1<=nextCRC32_D8(data,sc_crc1);
-		end
-		else if (addr==16'h100) begin
-			has_sc<= (sc_crc0==sc_crc1);
-			sc_crc0<=0;
-			sc_crc1<=0;
-		end
-		if (addr >= 16'h1000 && addr < 16'h1080) begin
-			sc_crc0<=nextCRC32_D8(data,sc_crc0);
-		end
-		else if (addr >= 16'h1080 && addr < 16'h1100) begin
-			sc_crc1<=nextCRC32_D8(data,sc_crc1);
-		end
-		else if (addr==16'h1100) begin
-                        if (has_sc)
-				has_sc<= (sc_crc0==sc_crc1);
+	if (load_start) begin
+		sc_crc0 <= 32'b0;
+		sc_crc1 <= 32'b0;
+		has_sc <= 1'b1;
+	end
+
+	if (sc_enable) begin
+		if (sc_offset < 12'h080) begin
+			sc_crc0 <= nextCRC32_D8(data,
+				(load_start || sc_offset == 12'h000) ? 32'b0 : sc_crc0);
+		end else if (sc_offset < 12'h100) begin
+			sc_crc1 <= nextCRC32_D8(data,
+				sc_offset == 12'h080 ? 32'b0 : sc_crc1);
+		end else if (sc_offset == 12'h100) begin
+			if (has_sc)
+				has_sc <= sc_crc0 == sc_crc1;
+			sc_crc0 <= 32'b0;
+			sc_crc1 <= 32'b0;
 		end
 	end
 end
@@ -1127,9 +1328,8 @@ module match_bytes
 (
 	input clk,
 	input reset,
-	input  [15:0] addr,
 	input  enable,
-	input  [7:0] data,     // data in,
+	input  [63:0] stream,  // shared byte history, newest byte in [7:0]
 	output reg hasMatch
 );
 
@@ -1137,42 +1337,25 @@ parameter [7:0] num_bytes = 8'd1;
 parameter [(num_bytes*8)-1:0] pattern = 0;
 parameter [7:0] needmatches=8'b1;
 
-reg [(num_bytes*8)-1:0] lastPattern;
-
 reg [7:0] curMatch;
 
 always @(posedge clk)
 begin
-	if (enable)
-	begin
-		// use address 0 as reset since reset is high during cart loads
-		if (addr==16'b0)
-		begin
-			curMatch<=8'b0;
-			hasMatch<=0;
-			lastPattern<= {lastPattern[(num_bytes*8)-9:0],data};
-		end
-		else
-		begin
-			lastPattern<= {lastPattern[(num_bytes*8)-9:0],data};
-			if (lastPattern == pattern)
-			begin
-					curMatch<=curMatch+8'b1;
-					if (curMatch==(needmatches-8'b1))
-						hasMatch<=1;
-			end
-		end
-	end
 	if (reset) begin
 		curMatch <= 0;
 		hasMatch <= 0;
-		lastPattern <= '0;
+	end
+
+	if (enable) begin
+		if (stream[(num_bytes*8)-1:0] == pattern) begin
+			if (reset || !hasMatch) begin
+				if (reset || curMatch < needmatches)
+					curMatch <= (reset ? 8'd0 : curMatch) + 8'd1;
+				if ((reset ? 8'd0 : curMatch) >= needmatches - 8'd1)
+					hasMatch <= 1'b1;
+			end
+		end
 	end
 end
 
 endmodule: match_bytes
-
-
-
-
-

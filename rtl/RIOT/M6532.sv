@@ -26,22 +26,24 @@ module M6532
 	input        clk,       // PHI 2
 	input        ce,        // Clock enable
 	input        res_n,     // reset
+	input        ram_init,      // Load the console's power up RAM image
+	input        ram_init_7800, // 1 = the 7800 BIOS loader, 0 = zeros
 	input  [6:0] addr,      // Address
 	input        RW_n,      // 1 = read, 0 = write
 	input  [7:0] d_in,
 	output logic [7:0] d_out,
 	input        RS_n,      // RAM select
 	output       IRQ_n,
+	output       IRQ_n_oe,  // IRQ pulls low, and is otherwise released
 	input        CS1,       // Chip select 1, 1 = selected
 	input        CS2_n,     // Chip select 2, 0 = selected
 	input  [7:0] PA_in,     // Port ins and outs
 	output [7:0] PA_out,    // NOTE that port output must be fed back to input
 	input  [7:0] PB_in,     // if not altered by a peripheral, in order for
 	output [7:0] PB_out,    // the chip to read properly!
-	output       oe         // Output enabled (always 8 bits)
+	output       oe,        // Output enabled (always 8 bits)
+	output       PA_read    // A selected read of ORA is happening now
 );
-
-parameter init_7800 = 0;
 
 reg [7:0] riot_ram[128];
 reg [7:0] out_a, out_b, data;
@@ -54,14 +56,53 @@ reg [1:0] incr;
 logic rollover;
 reg [1:0] irq_en;
 reg edge_detect;
+reg old_pa7;
 
-assign IRQ_n = ~((interrupt[7] & irq_en[1]) | (interrupt[6] & irq_en[0]));
+reg [6:0] init_addr;
+
+// The 7800 BIOS leaves this loader in RIOT RAM before it starts a cart, so
+// bypassing the BIOS has to put it there. Byte 8 and the last two bytes are
+// deliberate Decathlon workarounds.
+wire [7:0] init_image [128] = '{
+	8'hA9, 8'h00, 8'hAA, 8'h85, 8'h01, 8'h95, 8'h03, 8'hE8, 8'h00, 8'h2A, 8'hD0, 8'hF9, 8'h85, 8'h02, 8'hA9, 8'h04,
+	8'hEA, 8'h30, 8'h23, 8'hA2, 8'h04, 8'hCA, 8'h10, 8'hFD, 8'h9A, 8'h8D, 8'h10, 8'h01, 8'h20, 8'hCB, 8'h04, 8'h20,
+	8'hCB, 8'h04, 8'h85, 8'h11, 8'h85, 8'h1B, 8'h85, 8'h1C, 8'h85, 8'h0F, 8'hEA, 8'h85, 8'h02, 8'hA9, 8'h00, 8'hEA,
+	8'h30, 8'h04, 8'h24, 8'h03, 8'h30, 8'h09, 8'hA9, 8'h02, 8'h85, 8'h09, 8'h8D, 8'h12, 8'hF1, 8'hD0, 8'h1E, 8'h24,
+	8'h02, 8'h30, 8'h0C, 8'hA9, 8'h02, 8'h85, 8'h06, 8'h8D, 8'h18, 8'hF1, 8'h8D, 8'h60, 8'hF4, 8'hD0, 8'h0E, 8'h85,
+	8'h2C, 8'hA9, 8'h08, 8'h85, 8'h1B, 8'h20, 8'hCB, 8'h04, 8'hEA, 8'h24, 8'h02, 8'h30, 8'hD9, 8'hA9, 8'hFD, 8'h85,
+	8'h08, 8'h6C, 8'hFC, 8'hFF, 8'hEA, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF,
+	8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'h00, 8'h00
+};
+
+// IRQ is open drain on the part: it pulls the line low and otherwise releases
+// it to an external pull up. IRQ_n is the resolved level for internal use.
+wire irq_active = (interrupt[7] & irq_en[1]) | (interrupt[6] & irq_en[0]);
+assign IRQ_n = ~irq_active;
+assign IRQ_n_oe = irq_active;
 
 // These wires have a weak pull up, so any undriven wires will be high
 assign PA_out = out_a | ~dir_a;
 assign PB_out = out_b | ~dir_b;
 
-assign oe = (CS1 & ~CS2_n) && RW_n;
+// The edge detector hangs on the PA7 pin, so it sees the resolved level: the
+// same wired AND of drive and feedback that a port A read returns.
+wire pa7 = PA_in[7] & PA_out[7];
+wire p1 = incr == 2'd0 || rollover;
+wire p8 = ~|prescaler[2:0] && incr == 2'd1;
+wire p64 = ~|prescaler[5:0] && incr == 2'd2;
+wire p1024 = ~|prescaler[9:0] && incr == 2'd3;
+wire tick_inc = p1 || p8 || p64 || p1024;
+
+// RES turns the data bus off, and the part drives it only through phase 2 of a
+// selected read. Phase 2 here is the one clk_sys cycle ce marks, which is the
+// cycle the CPU samples in.
+assign oe = res_n && (CS1 & ~CS2_n) && RW_n && ce;
+
+// A peripheral that a read consumes - a trackball step, a paddle dump -
+// needs to know when ORA is on the bus. ORA is RS=1, A2=0, A1:A0=00, with
+// A4:A3 don't care, so $0280, $0288, $0290 and $0298 are all the same read.
+assign PA_read = oe && RS_n && ~addr[2] && ~|addr[1:0];
+
 always_ff @(posedge clk) begin
 	if ((CS1 & ~CS2_n) && RW_n) begin
 		if (~RS_n) begin // RAM selected
@@ -70,12 +111,18 @@ always_ff @(posedge clk) begin
 			case(addr[1:0])
 				2'b01: d_out <= dir_a; // DDRA
 				2'b11: d_out <= dir_b; // DDRB
-				2'b00: d_out <= (PA_in & PA_out); // Input A
-				2'b10: d_out <= (PB_in & PB_out); // Input B
+				2'b00: d_out <= (PA_in & PA_out); // Input A, always the pin
+				// Port B is the exception: a bit set to output reads its own
+				// output register back, so an outside low cannot mask a
+				// driven high. DDRB=$01, ORB=$01, PB pins $FE reads $FF.
+				2'b10: d_out <= (dir_b & out_b) | (~dir_b & PB_in);
 			endcase
 		end else if (addr[2])begin // Timer & Interrupts
+			// The counter takes its new value at the end of this cycle and
+			// the bus already carries it: write 52 at /8, and the first
+			// read after that is 51, not 52.
 			if (~addr[0])
-				d_out <= timer[7:0];
+				d_out <= tick_inc ? timer - 8'd1 : timer;
 			else
 				d_out <= {interrupt[7:6], 6'd0};
 		end
@@ -84,45 +131,34 @@ always_ff @(posedge clk) begin
 		d_out <= 8'hFF;
 end
 
-wire pa7 = dir_a[7] ? PA_out[7] : PA_in[7];
-wire p1 = incr == 2'd0 || rollover;
-wire p8 = ~|prescaler[2:0] && incr == 2'd1;
-wire p64 = ~|prescaler[5:0] && incr == 2'd2;
-wire p1024 = ~|prescaler[9:0] && incr == 2'd3;
-wire tick_inc = p1 || p8 || p64 || p1024;
+always_ff @(posedge clk) begin
+	// RES leaves the 128 bytes of RAM alone. This is the console's power up
+	// image instead, and the top level decides when a console applies it. It is
+	// written a byte a cycle for as long as ram_init is held, so ram_init has to
+	// stay up for at least 128 clocks - a console's reset line is held orders of
+	// magnitude longer. Loading all 128 at once would cost 1024 flops with a set
+	// or a reset on every one.
+	if (ram_init) begin
+		init_addr <= init_addr + 1'd1;
+		riot_ram[init_addr] <= ram_init_7800 ? init_image[init_addr] : 8'h00;
+	end else begin
+		init_addr <= 7'd0;
+	end
 
-always_ff @(posedge clk) if (~res_n) begin
-	// Set to specific value on atari 7800 version, 0 on MOS version
-	if (init_7800)
-		riot_ram <= '{
-			8'hA9, 8'h00, 8'hAA, 8'h85, 8'h01, 8'h95, 8'h03, 8'hE8, 8'h00, 8'h2A, 8'hD0, 8'hF9, 8'h85, 8'h02, 8'hA9, 8'h04,
-			8'hEA, 8'h30, 8'h23, 8'hA2, 8'h04, 8'hCA, 8'h10, 8'hFD, 8'h9A, 8'h8D, 8'h10, 8'h01, 8'h20, 8'hCB, 8'h04, 8'h20,
-			8'hCB, 8'h04, 8'h85, 8'h11, 8'h85, 8'h1B, 8'h85, 8'h1C, 8'h85, 8'h0F, 8'hEA, 8'h85, 8'h02, 8'hA9, 8'h00, 8'hEA,
-			8'h30, 8'h04, 8'h24, 8'h03, 8'h30, 8'h09, 8'hA9, 8'h02, 8'h85, 8'h09, 8'h8D, 8'h12, 8'hF1, 8'hD0, 8'h1E, 8'h24,
-			8'h02, 8'h30, 8'h0C, 8'hA9, 8'h02, 8'h85, 8'h06, 8'h8D, 8'h18, 8'hF1, 8'h8D, 8'h60, 8'hF4, 8'hD0, 8'h0E, 8'h85,
-			8'h2C, 8'hA9, 8'h08, 8'h85, 8'h1B, 8'h20, 8'hCB, 8'h04, 8'hEA, 8'h24, 8'h02, 8'h30, 8'hD9, 8'hA9, 8'hFD, 8'h85,
-			8'h08, 8'h6C, 8'hFC, 8'hFF, 8'hEA, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF,
-			8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'h00, 8'h00
-		};
-	else
-		riot_ram <= '{128{8'h00}};
-
-	out_a <= 8'h00;
-	out_b <= 8'h00;
-	dir_a <= 8'h00;
-	dir_b <= 8'h00;
-	{interrupt, irq_en, edge_detect} <= '0;
-	incr <= 2'b10; // Increment resets to 64
-	timer <= 8'hFF;   // Timer resets to FF
-	prescaler <= 0;
-	rollover <= 0;
-end else begin
-	
-	if (ce) begin : riot_stuff
-		reg old_pa7;
-	
+	if (~res_n) begin
+		out_a <= 8'h00;
+		out_b <= 8'h00;
+		dir_a <= 8'h00;
+		dir_b <= 8'h00;
+		{interrupt, irq_en, edge_detect} <= '0;
+		old_pa7 <= pa7;   // RES reports no edge for the level it started on
+		incr <= 2'b10; // Increment resets to 64
+		timer <= 8'hFF;   // Timer resets to FF
+		prescaler <= 0;
+		rollover <= 0;
+	end else if (ce) begin
 		prescaler <= prescaler + 1'd1;
-	
+
 		if (tick_inc)
 			timer <= timer - 8'd1;
 
@@ -162,12 +198,12 @@ end else begin
 				end
 			end
 		end
-	
+
 		if (tick_inc && timer == 0) begin
 			interrupt[7] <= 1;
 			rollover <= 1;
 		end
-	
+
 		// Edge detection
 		old_pa7 <= pa7;
 		if ((edge_detect && ~old_pa7 && pa7) || (~edge_detect && old_pa7 && ~pa7))
