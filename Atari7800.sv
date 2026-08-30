@@ -1,11 +1,6 @@
 `default_nettype none
-// k7800 (c) by Jamie Blanks
-
-// k7800 is licensed under a
-// Creative Commons Attribution-NonCommercial 4.0 International License.
-
-// You should have received a copy of the license along with this
-// work. If not, see http://creativecommons.org/licenses/by-nc/4.0/.
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2019-2026 Jamie Blanks
 
 module emu
 (
@@ -31,7 +26,6 @@ assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
-assign {DDRAM_CLK, DDRAM_BURSTCNT, DDRAM_ADDR, DDRAM_DIN, DDRAM_BE, DDRAM_RD, DDRAM_WE} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 
@@ -41,6 +35,7 @@ wire clock_locked;
 wire clk_vid;
 wire clk_sys;
 wire clk_tia;
+wire clk_arm;
 
 pll pll
 (
@@ -49,6 +44,7 @@ pll pll
 	.outclk_0(clk_sys),
 	.outclk_1(clk_vid),
 	.outclk_2(clk_tia),
+	.outclk_3(clk_arm),
 	.locked(clock_locked)
 );
 
@@ -59,12 +55,22 @@ pll pll
 
 logic reset;
 logic use_tape;
-always @(posedge clk_vid) begin
+// clk_sys, not clk_vid: this picks the cartridge mapper, which the ARM's memory
+// map decode reads. A clk_vid launch has 3.5 ns to reach clk_arm; a clk_sys one
+// has 14.
+always @(posedge clk_sys) begin
 	if (status[48])
 		use_tape <= 1;
 	if (cart_download)
 		use_tape <= 0;
-	reset <= RESET | buttons[1] | status[0] | cart_download | bios_download || status[48];
+end
+
+// clk_sys: every term but the OSD bits is already a clk_sys register, and so is
+// almost everything reset drives. It also reaches the ARM's reset, and clk_vid
+// leaves only 3.5 ns to get there.
+always @(posedge clk_sys) begin
+	reset <= RESET | buttons[1] | status[0] | cart_download | bios_download |
+		status[48] | old_cart_download | mapper_init_busy;
 end
 
 
@@ -72,7 +78,7 @@ wire cart_download = ioctl_download & (ioctl_index[5:0] == 6'd1);
 wire bios_download = ioctl_download & ((ioctl_index[5:0] == 6'd0) && (ioctl_index[7:6] == 0)) || (ioctl_index[5:0] == 2);
 wire pal_download  = ioctl_download & (ioctl_index[5:0] == 6'd3);
 
-reg old_cart_download;
+reg old_cart_download = 1'b0;
 
 ////////////////////////////  HPS I/O  //////////////////////////////////
 // Status Bit Map:
@@ -104,6 +110,7 @@ parameter CONF_STR = {
 	"P1OT,Show Overscan,No,Yes;",
 	"P1OE,Show Border,Yes,No;",
 	"P1OK,Composite Blending,No,Yes;",
+	"P1O[74],Composite Filter,Off,On;",
 	"P1OUV,Temperature Colors,Warm,Cool,Hot,Custom;",
 	"H3P1FC3,PAL,Load Palette;",
 	"P2,Peripherals;",
@@ -127,7 +134,7 @@ parameter CONF_STR = {
 	"D2P4oV,Stabilize Video,On,Off;",
 	"D2P4oF,De-comb,Off,On;",
 	"D2P4oU,Black & White,Off,On;",
-	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF,JANE;",
+	"D2P4oOS,Bankswitching,Auto,F8,F6,FE,E0,3F,F4,P2,FA,CV,2K,UA,E7,F0,32,AR,3E,SB,WD,EF,JANE,DPC+,CTY,CDF,BUS,FA2;",
 	"P4oN,Fix SC File Checksums,Off,On;",
 	"D2P4-;",
 	"D2P4rG,Load Tape From ADC;",
@@ -178,7 +185,7 @@ wire [21:0] gamma_bus;
 wire [15:0] joy0,joy1,joy2,joy3;
 wire [15:0] joya_0,joya_1,joya_2,joya_3,joyar_0,joyar_1,joyar_2,joyar_3;
 wire  [7:0] pd_0,pd_1,pd_2,pd_3;
-wire        ioctl_wait;
+logic       ioctl_wait;
 
 reg  [31:0] sd_lba[1];
 reg         sd_rd;
@@ -292,6 +299,14 @@ logic ce_pix_raw;
 logic [7:0] cart_din;
 logic cart_rw;
 wire [4:0] force_bs;
+wire [2:0] mapper_revision;
+wire cdf_ldx;
+wire cdf_ldy;
+wire cdf_fetch_offset_enable;
+wire [7:0] cdf_fetch_offset;
+wire [31:0] cdfj_entry;
+wire [31:0] cdfj_stack;
+wire [15:0] arm_audio_size_addr;
 wire sc;
 
 logic [15:0] rnd;
@@ -303,6 +318,9 @@ wire region_select = ~|status[16:15] ? (tia_en ? tia_pal : cart_region[0]) : sta
 logic [3:0] iout;
 logic tia_hsync;
 logic tia_pal, tia_f1;
+logic signed [23:0] comp;
+logic comp_tog, comp_hs, comp_vs, comp_hb, comp_vb;
+logic [9:0] comp_burst_start, comp_burst_len;
 logic [7:0] rval;
 
 always @(posedge clk_sys) begin
@@ -334,6 +352,19 @@ logic use_sk;
 logic core_paused;
 logic freeze_sync;
 logic cpu_ce;
+
+logic fa2_nvram_request;
+logic fa2_nvram_write;
+logic [7:0] fa2_nvram_addr;
+logic [7:0] fa2_nvram_wdata;
+logic [7:0] fa2_nvram_rdata;
+logic fa2_nvram_ready;
+logic fa2_nvram_dirty;
+logic arm_load_wait;
+logic mapper_init_busy;
+
+wire [4:0] selected_2600_mapper = cart_is_7800 ? BANK00 :
+	(use_tape ? BANKAR : (|status[60:56] ? status[60:56] : force_bs));
 
 always_ff @(posedge clk_sys) begin :core_sync
 	reg old_sync;
@@ -387,7 +418,7 @@ Atari7800 main
 (
 	.clk_sys      (clk_sys),
 	.reset        (reset),
-	.loading      (cart_download || bios_download),
+	.loading      (cart_download || bios_download || mapper_init_busy),
 	.pause        (core_paused_eff),
 
 	// Video
@@ -400,6 +431,14 @@ Atari7800 main
 	.VBlank       (VBlank),
 	.VBlank_orig  (VBlank_orig),
 	.ce_pix       (ce_pix_raw),
+	.comp         (comp),
+	.comp_tog     (comp_tog),
+	.comp_hs      (comp_hs),
+	.comp_vs      (comp_vs),
+	.comp_hb      (comp_hb),
+	.comp_vb      (comp_vb),
+	.comp_burst_start(comp_burst_start),
+	.comp_burst_len  (comp_burst_len),
 	.show_border  (~status[14]),
 	.show_overscan(status[29]),
 	.PAL          (region_select),
@@ -432,7 +471,32 @@ Atari7800 main
 	.cartram_rd     (cartram_rd),
 	.cartram_wrdata (cartram_wrdata),
 	.cartram_data   (cartram_data),
-
+	.clk_arm        (clk_arm),
+	.mapper_load_start(~old_cart_download && cart_download),
+	.mapper_load_addr (ioctl_addr),
+	.mapper_load_valid(ioctl_wr && cart_download),
+	.mapper_load_data (ioctl_dout),
+	.mapper_load_end  (old_cart_download && ~cart_download),
+	.mapper_load_wait (arm_load_wait),
+	.mapper_init_busy,
+	.arm_reset        (!clock_locked),
+	.ddram_clk        (DDRAM_CLK),
+	.ddram_addr       (DDRAM_ADDR),
+	.ddram_burstcnt   (DDRAM_BURSTCNT),
+	.ddram_busy       (DDRAM_BUSY),
+	.ddram_dout       (DDRAM_DOUT),
+	.ddram_dout_ready (DDRAM_DOUT_READY),
+	.ddram_rd         (DDRAM_RD),
+	.ddram_din        (DDRAM_DIN),
+	.ddram_be         (DDRAM_BE),
+	.ddram_we         (DDRAM_WE),
+	.fa2_nvram_request,
+	.fa2_nvram_write,
+	.fa2_nvram_addr,
+	.fa2_nvram_wdata,
+	.fa2_nvram_rdata,
+	.fa2_nvram_ready,
+	.fa2_nvram_dirty,
 	// BIOS
 	.bios_out     (bios_data),
 	.AB           (bios_addr), // Address
@@ -459,12 +523,20 @@ Atari7800 main
 	.PAread       (PAread),
 
 	// 2600 Cart Flags from detect2600
-	.force_bs     (use_tape ? BANKAR : force_bs),
+	.force_bs     (selected_2600_mapper),
+	.mapper_revision,
+	.cdf_ldx,
+	.cdf_ldy,
+	.cdf_fetch_offset_enable,
+	.cdf_fetch_offset,
+	.cdfj_entry,
+	.cdfj_stack,
+	.arm_audio_size_addr,
 	.sc           (sc),
 	.clearval     (status[1] ? rval : 8'h00),
 	.random       (rval),
 	.decomb       (status[47]),
-	.mapper       (status[60:56]),
+	.mapper       (5'd0),
 	.tape_in      ({use_tape, tape_adc}),
 	.fix_sc_cs    (status[55]),
 
@@ -483,13 +555,22 @@ logic [14:0] bios_mask;
 detect2600 detect2600
 (
 	.clk        (clk_sys),
-	.addr       (ioctl_addr[15:0]),
-	.reset      (~old_cart_download && cart_download),
+	.load_start (~old_cart_download && cart_download),
+	.load_addr  (ioctl_addr),
+	.load_valid (ioctl_wr & cart_download),
+	.load_end   (old_cart_download && ~cart_download),
 	.cart_size  (cart_size),
-	.enable     (ioctl_wr & cart_download),
 	.data       (ioctl_dout),
 	.force_bs   (force_bs),
-	.sc         (sc)
+	.sc         (sc),
+	.mapper_revision(mapper_revision),
+	.cdf_ldx,
+	.cdf_ldy,
+	.cdf_fetch_offset_enable,
+	.cdf_fetch_offset,
+	.cdfj_entry,
+	.cdfj_stack,
+	.arm_audio_size_addr
 );
 
 initial begin
@@ -577,7 +658,7 @@ spram #(.addr_width(15), .mem_name("BIOS")) bios
 );
 
 always @(posedge clk_vid)
-	ioctl_wait <= cart_download && cart_busy;
+	ioctl_wait <= cart_download && (cart_busy || arm_load_wait);
 
 sdram sdram
 (
@@ -1147,9 +1228,42 @@ always @(posedge CLK_VIDEO) begin : pix_edge_gen
 	ce_pix_old <= ce_pix_raw;
 end
 
-video_mixer #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
+reg comp_tog_d, comp_tog_d2;
+always @(posedge CLK_VIDEO) begin
+	comp_tog_d  <= comp_tog;
+	comp_tog_d2 <= comp_tog_d;
+end
+wire ce_comp = comp_tog_d ^ comp_tog_d2;
+
+wire use_composite = status[74];
+
+video_mixer_plus #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1), .COMP_SPC(4)) video_mixer
 (
 	.*,
+	.use_composite(use_composite),
+	.ce_comp      (ce_comp),
+	.composite    (comp),
+	.comp_hs      (comp_hs),
+	.comp_vs      (comp_vs),
+	.comp_hb      (comp_hb),
+	.comp_vb      (comp_vb),
+	// The two chips put their burst in different places, so the window comes
+	// muxed out of the core alongside the signal.
+	.comp_burst_start(comp_burst_start),
+	.comp_burst_len  (comp_burst_len),
+	.comp_sat        (8'd128),
+	.comp_hue        (8'd0),
+	.comp_smear      (4'd3),
+	.comp_luma_delay (4'd2),
+	// The 7800 has no setup, like NTSC-J; NTSC-M would be 439.
+	.comp_setup      (16'd0),
+	.comp_luma_gain  (16'd2857),
+	// AGC off for this hardware. It keys on the burst, which NTSC gives the same
+	// amplitude as sync - but the board does not: the ladder puts sync at 0.2752
+	// of the logic high against a burst of 0.1255, so the burst is 0.456 of sync
+	// where the standard says 1.000. Keyed on that, AGC would mis-scale by more
+	// than two to one. It stays available for sources that are in spec.
+	.comp_agc        (1'b0),
 
 	.VGA_DE(vga_de),
 	.hq2x(scale==1),
@@ -1165,11 +1279,39 @@ video_mixer #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 
 /////////////////////////  STATE SAVE/LOAD  /////////////////////////////
 wire bk_save_write = use_sk ? sk_write : (~RW & hsc_ram_cs);
+wire downloading = cart_download;
+reg  bk_loading = 0;
+reg  bk_state = 0;
+reg  fa2_file_load_complete = 0;
+wire fa2_backing_cs;
+wire fa2_backing_write;
+wire [7:0] fa2_backing_addr;
+wire [7:0] fa2_backing_wdata;
+
+fa2_nvram_bridge fa2_nvram_bridge
+(
+	.clk                (clk_sys),
+	.reset              (reset),
+	.new_image          (~old_cart_download && cart_download),
+	.backing_busy       (bk_state || downloading),
+	.file_load_complete (fa2_file_load_complete),
+	.request            (fa2_nvram_request),
+	.write              (fa2_nvram_write),
+	.addr               (fa2_nvram_addr),
+	.wdata              (fa2_nvram_wdata),
+	.ready              (fa2_nvram_ready),
+	.rdata              (fa2_nvram_rdata),
+	.backing_rdata      (hsc_ram_dout),
+	.backing_cs         (fa2_backing_cs),
+	.backing_write      (fa2_backing_write),
+	.backing_addr       (fa2_backing_addr),
+	.backing_wdata      (fa2_backing_wdata)
+);
 
 reg bk_pending;
 
 always @(posedge clk_sys) begin
-	if (bk_ena && ~OSD_STATUS && bk_save_write)
+	if (bk_ena && ((~OSD_STATUS && bk_save_write) || fa2_nvram_dirty))
 		bk_pending <= 1'b1;
 	else if (bk_state)
 		bk_pending <= 1'b0;
@@ -1211,9 +1353,12 @@ EEPROM_24LC0X
 dpram_dc #(.widthad_a(14)) hsc_ram
 (
 	.clock_a   (clk_sys),
-	.address_a (use_sk ? sk_ram_addr : bios_addr),
-	.data_a    (use_sk ? sk_ram_do : din),
-	.wren_a    (use_sk ? sk_write : (~RW & hsc_ram_cs)),
+	.address_a (fa2_backing_cs ? {6'd0, fa2_backing_addr} :
+		(use_sk ? sk_ram_addr : bios_addr)),
+	.data_a    (fa2_backing_cs ? fa2_backing_wdata :
+		(use_sk ? sk_ram_do : din)),
+	.wren_a    (fa2_backing_cs ? fa2_backing_write :
+		(use_sk ? sk_write : (~RW & hsc_ram_cs))),
 	.q_a       (hsc_ram_dout),
 
 	.clock_b   (clk_sys),
@@ -1223,7 +1368,6 @@ dpram_dc #(.widthad_a(14)) hsc_ram
 	.q_b       (sd_buff_din[0])
 );
 
-wire downloading = cart_download;
 reg old_downloading = 0;
 reg bk_ena = 0;
 always @(posedge clk_sys) begin
@@ -1237,8 +1381,6 @@ end
 
 wire bk_load    = 0;
 wire bk_save    = (bk_pending & OSD_STATUS);
-reg  bk_loading = 0;
-reg  bk_state   = 0;
 
 always @(posedge clk_sys) begin : save_block
 	reg old_load = 0, old_save = 0, old_ack;
@@ -1246,6 +1388,7 @@ always @(posedge clk_sys) begin : save_block
 	old_load <= bk_load & bk_ena;
 	old_save <= bk_save & bk_ena;
 	old_ack  <= sd_ack;
+	fa2_file_load_complete <= 1'b0;
 
 	if(~old_ack & sd_ack) {sd_rd, sd_wr} <= 0;
 
@@ -1267,6 +1410,8 @@ always @(posedge clk_sys) begin : save_block
 	end else begin
 		if(old_ack & ~sd_ack) begin
 			if(&sd_lba[0][5:0]) begin
+				if (bk_loading)
+					fa2_file_load_complete <= 1'b1;
 				bk_loading <= 0;
 				bk_state <= 0;
 			end else begin

@@ -143,8 +143,13 @@ assign hbs        = col == HBLANK_START;
 assign prst       = col == RCPRST;
 
 always_ff @(posedge clk) if (reset) begin
-	row <= bypass_bios ? 9'd38 : 9'd0;
-	col <= bypass_bios ? 9'd278 : 9'd0;
+	// Where MARIA's counters stand when the real BIOS hands the cartridge
+	// over, measured on the whole-core model 100 clk_sys before Choplifter's
+	// first fetch - the same distance the skipped path takes from this seed
+	// to that fetch. Part of one snapshot with control.sv and DMA.sv; moving
+	// any of them alone leaves the DMA engine mid-line with the wrong list.
+	row <= bypass_bios ? 9'd239 : 9'd0;
+	col <= bypass_bios ? 9'd386 : 9'd0;
 end else if (mclk1) begin
 	col <= col + 9'd1;
 

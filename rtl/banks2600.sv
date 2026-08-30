@@ -1,10 +1,5 @@
-// k7800 (c) by Jamie Blanks
-
-// k7800 is licensed under a
-// Creative Commons Attribution-NonCommercial 4.0 International License.
-
-// You should have received a copy of the license along with this
-// work. If not, see http://creativecommons.org/licenses/by-nc/4.0/.
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2019-2026 Jamie Blanks
 
 module mapper_none
 (

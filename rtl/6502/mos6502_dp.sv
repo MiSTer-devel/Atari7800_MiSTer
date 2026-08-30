@@ -87,7 +87,6 @@ module mos6502_dp
 	always_comb begin
 		db_raw = 8'hFF;
 		if (c.dl_db)  db_raw &= dl;
-		if (c.dl0_db) db_raw[0] &= dl[0];
 		if (c.pcl_db) db_raw &= pcl;
 		if (c.pch_db) db_raw &= pch;
 		if (c.ac_db)  db_raw &= a;
@@ -274,8 +273,8 @@ module mos6502_dp
 			// The two nybble tests are taken here, where AI and BI still hold
 			// the operands the AND ran on.
 			if (c.arr_d) begin
-				arr_lo_q <= ai[3:0] >= 4'd5;
-				arr_hi_q <= ai[7:4] >= 4'd5;
+				arr_lo_q <= (ai[3:0] & bi[3:0]) >= 4'd5;
+				arr_hi_q <= (ai[7:4] & bi[7:4]) >= 4'd5;
 			end
 
 			// A held cycle forces AI = 0, BI = ADL and the operation to OR.

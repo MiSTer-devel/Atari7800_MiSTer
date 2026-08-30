@@ -50,8 +50,7 @@ module dma(
 	output logic [15:0] AB,
 	output logic        ABEN,
 	output logic        latch_byte,
-	output logic        nmi_n,
-	output logic   [14:0] sel_out
+	output logic        nmi_n
 );
 
 // 4 Byte Header format:
@@ -97,7 +96,8 @@ logic [3:0] halt_cnt;
 logic vbe_trigger;
 
 logic [6:0] sel, sel_last;
-logic [4:0] cond;
+logic [3:0] cond_lo;
+wire  [4:0] cond = {PCLKEDGE, cond_lo};   // bit 4 is live, 3:0 latch at phi1
 logic [47:0] dmas;
 logic [15:0] incremented_address;
 logic vbe_halt, hbs_halt;
@@ -199,9 +199,6 @@ assign sel[0] = cond ==? 5'b0xx11; //  1xx00
 
 assign latch_hpos = LRICLD;
 
-assign cond[4] = PCLKEDGE;
-
-
 
 always_comb begin
 	selected_address = '0;
@@ -226,7 +223,11 @@ logic old_halt;
 // bit state variable to tell this mechanism what phase of operation it is in. The major
 // start and stop conditions are the two RSS signals discussed above.
 // NOTE: The indexing of this is the opposite of the schematic for comparison purposes
-logic [13:0] cond2;
+// Every cell of both PLA planes was read off the drawing and matches what is written
+// here.
+logic [9:0] cond2_hi;
+logic [1:0] cond2_lo;
+wire [13:0] cond2 = {cond2_hi, ~|OFFSET, ~|WIDTH, cond2_lo}; // OFF0 and W0 are live
 // Input gated by phi2
 assign dmas[47] = cond2 ==? 14'b10010x10xxxx00;
 assign dmas[46] = cond2 ==? 14'b10010x10xxxx11;
@@ -245,7 +246,7 @@ assign dmas[34] = cond2 ==? 14'b10001xxxxxxx11;
 assign dmas[33] = cond2 ==? 14'b00001xxxxxx011;
 assign dmas[32] = cond2 ==? 14'b01001xxxxxxx11;
 assign dmas[31] = cond2 ==? 14'b11001xxxx1xx11;
-assign dmas[30] = cond2 ==? 14'b11001xxxx0xx11; // ???
+assign dmas[30] = cond2 ==? 14'b11001xxxx0xx11; // faded
 assign dmas[29] = cond2 ==? 14'b00101xxxx0xx11;
 assign dmas[28] = cond2 ==? 14'b11101xxxx0xx11;
 assign dmas[27] = cond2 ==? 14'b010110xxxxxx11;
@@ -266,7 +267,7 @@ assign dmas[13] = cond2 ==? 14'b00000xxxxxxxxx;
 assign dmas[12] = cond2 ==? 14'b10010x10xxxx01;
 assign dmas[11] = cond2 ==? 14'b10010x00xxxxxx;
 assign dmas[10] = cond2 ==? 14'b10000xxxxx1xxx;
-assign dmas[9 ] = cond2 ==? 14'b01000xxxxxxxxx; // ???
+assign dmas[9 ] = cond2 ==? 14'b01000xxxxxxxxx; // faded
 assign dmas[8 ] = cond2 ==? 14'b11000xxxxxxxxx;
 assign dmas[7 ] = cond2 ==? 14'b00100xxxxxxxxx;
 assign dmas[6 ] = cond2 ==? 14'b10100xxxxxxxxx;
@@ -286,12 +287,8 @@ logic halt_en;
 
 assign sel_5 = sel5_cnt == 1'd1;
 
-assign sel_out = sel_last;
 assign ABEN = ~ABENF; // Gated by phi1
 assign HALT = ~pclk ? halt_en : old_halt2; // gated by phi1
-
-assign cond2[3:2] = {~|OFFSET, ~|WIDTH};
-
 
 always_ff @(posedge clk_sys) begin
 	if (~pclk)
@@ -324,7 +321,7 @@ always_ff @(posedge clk_sys) begin
 
 	end else if (mclk1) begin
 		sel5_1 <= sel_last[5];
-		cond[3:0] <= {~(vbe_halt || hbs_halt), ~DLI, ~|sel_last[5:1], ~|sel_last[2:1]}; // gated by phi1
+		cond_lo <= {~(vbe_halt || hbs_halt), ~DLI, ~|sel_last[5:1], ~|sel_last[2:1]}; // gated by phi1
 	end
 
 	if (mclk1) begin
@@ -367,7 +364,7 @@ always_ff @(posedge clk_sys) begin
 		RLD1    <= ~(dmas ==? 48'bxxxxxx0x0x000x00xxxxxxxx0xx000xx0xxxxxx0x0xx00xx);
 		XEN1    <= ~(dmas ==? 48'bxxxxx0x0x0x0x0xx0000xxxxx00xxx00x0x00xxxxxxxxxxx);
 		RDL2    <= ~(dmas ==? 48'bxxxxxxxxx0xxx0xx00xxxxxxx00xxxxxxxxxxx00000x00xx);
-		XEN2    <= ~(dmas ==? 48'bxxx000x0x0x0x0xx0000xxxxx00xxxxxxxxxx0x0x0xxxxxx); //???
+		XEN2    <= ~(dmas ==? 48'bxxx000x0x0x0x0xx0000xxxxx00xxxxxxxxxx0x0x0xxxxxx); // faded
 		RLD3    <= ~(dmas ==? 48'bxxxxxxx0x0x0x0xx00xxxxxx00000xxxxxxxxxx0xxxx0xxx);
 		LRICLD  <= ~(dmas ==? 48'bxxxxxxxxxxxxxxxxxx0xxxxxxxx0xxxxxxxxxxxxxxxxxxxx);
 		HALTRST <= ~(dmas ==? 48'bxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00000);
@@ -393,8 +390,8 @@ always_ff @(posedge clk_sys) begin
 
 	end else if (mclk0) begin
 		// gated at phi2
-		cond2[1:0] <= {~RSS1, ~RSS0};
-		cond2[13:4] <= {PLA0, PLA1, PLA2, PLA3, PLA4, char_width, DM[1:0], LONGHDR, IND};
+		cond2_lo <= {~RSS1, ~RSS0};
+		cond2_hi <= {PLA0, PLA1, PLA2, PLA3, PLA4, char_width, DM[1:0], LONGHDR, IND};
 
 		if (DLI_flag && INTENBL)
 			DLI <= 1;
@@ -408,9 +405,9 @@ always_ff @(posedge clk_sys) begin
 		// gated by phi2
 		if (vbe)
 			vbe_halt <= 1;
-		
+
 		// Gated by phi2
-		if (HALTRST) begin 
+		if (HALTRST) begin
 			vbe_halt <= 0;
 			hbs_halt <= 0;
 		end
@@ -486,6 +483,10 @@ always_ff @(posedge clk_sys) begin
 		if (WLATLDF) begin
 			if (data_en) begin
 				WIDTH <= d_in[4:0];
+				// Not on the drawing: WLATLDF is decoded from RLD alone, so the
+				// part loads PAL here unconditionally. The guard keeps a 4-byte
+				// header's terminating $00 from wiping the palette. Unsourced -
+				// .agents/evidence/maria/schematic_audit_2026-08-30.md N5.
 				if (LONGHDR || |d_in[4:0])
 					PAL <= d_in[7:5];
 			end else
@@ -512,12 +513,16 @@ always_ff @(posedge clk_sys) begin
 		end
 	end
 	if (reset) begin
-		DL <= bypass_bios ? 16'h1FFC : 16'd0;
-		DL_PTR <= bypass_bios ? 16'h1FFC : 16'd0;
-		ZONE_PTR <= bypass_bios ? 16'h1F84 : 16'd0;
-		OFFSET <= bypass_bios ? 4'hA : 4'd0;
+		// One snapshot of the DMA engine as the real BIOS leaves it, taken
+		// 101 clk_sys before the cartridge's first fetch - see the note in
+		// video_sync.sv. These belong with the raster seed there and the
+		// zone pointer in control.sv.
+		DL <= bypass_bios ? 16'h2200 : 16'd0;
+		DL_PTR <= bypass_bios ? 16'h2207 : 16'd0;
+		ZONE_PTR <= bypass_bios ? 16'h1FF3 : 16'd0;
+		OFFSET <= bypass_bios ? 4'h2 : 4'd0;
 		CHR_PTR <= 0;
-		PIX_PTR <= 0;
+		PIX_PTR <= bypass_bios ? 16'h8400 : 16'd0;
 		WIDTH <= 0;
 		//dmas <= 48'h400000000000;
 		WM <= 0;
@@ -529,17 +534,16 @@ always_ff @(posedge clk_sys) begin
 		{TLD, DPPHLD, DPPLLD, DPRLLD, DPRHLD, DPHLD, DPLLD, PPLLD, PPHLD, OFFLD,
 		WLATLDF, DLILDF, WLD1F} <= '0;
 		PLA3 <= bypass_bios ? 1'b1 : 1'b0;
-		PLA0 <= bypass_bios ? 1'b1 : 1'b0; // 0x8 after reset init
+		PLA0 <= 1'b0;
 		AB <= 0;
 		PAL <= 0;
 		XEN <= 0;
 		ABENF <= 1;
-		cond2[13:4] <= bypass_bios ? 10'b1001001100 : 10'd0;
-		cond2[1:0] <= bypass_bios ? 2'b11 : 2'd0; // 0x05f7 after reset init
-		//cond2[3:2] <= 2'b00;
+		cond2_hi <= bypass_bios ? 10'b0001001100 : 10'd0;
+		cond2_lo <= bypass_bios ? 2'b11 : 2'd0; // 0x04c7 at the handoff
 		DLI_flag <= 0;
 		add_sel <= 0;
-		cond[3:0] <= 0;
+		cond_lo <= 0;
 		data_en <= 0;
 		holey <= 0;
 		latch_byte <= 0;
@@ -549,6 +553,8 @@ always_ff @(posedge clk_sys) begin
 		A11en <= 0;
 		vbe_halt <= 0;
 		hbs_halt <= 0;
+		{start_sr, end_sr, sel5_cnt} <= '0;
+		{old_halt, old_halt2, halt_en, sel5_1, sel5_2, noslow} <= '0;
 		nmi_n <= 1;
 		PAL <= 0;
 		sel_last <= 0;

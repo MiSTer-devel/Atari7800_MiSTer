@@ -394,6 +394,7 @@ end
 
 endmodule
 
+
 module cpuclk
 (
 	input         clk,
@@ -772,7 +773,8 @@ module hmove_gen
 		end
 
 		if (hclk.level_p1) begin
-			if (sec)
+			// Arm each extra-clock latch once; SEC spans two modelled phase windows.
+			if (sec && ~sec_1)
 				{p0ec[0], p1ec[0], m0ec[0], m1ec[0], blec[0]} <= 5'b11111;
 			if (p0_m[3:0] == hmc_uns)
 				p0ec[0] <= 0;
@@ -806,7 +808,6 @@ module playfield
 	input         reflect, // Control playfield, 1 makes right half mirror image
 	input         cnt,     // center signal, high means right half
 	input         rhb,     // Reset HBlank signal
-	input         hblank,  // HBlank signal
 	input [19:0]  pfc,     // Combined playfield registers
 	output logic  pf       // Playfield graphics
 );
@@ -814,8 +815,8 @@ module playfield
 	logic [4:0] pf_index, pf_next, pf_latch2, pf_latch1;
 	logic pf_1, pf_2, pf_3;
 
-	// Outputs in order PF0 4..7, PF1 7:0, PF2 0:7
-	logic [4:0] index_lut[20];
+	// Outputs in order PF0 4..7, PF1 7:0, PF2 0:7, then the empty position
+	logic [4:0] index_lut[21];
 
 	wire pf_reset = rhb || (cnt && ~reflect);
 	wire pf_reflect = (cnt && reflect);
@@ -823,16 +824,28 @@ module playfield
 	assign index_lut = '{
 		5'd00, 5'd01, 5'd02, 5'd03,                             // PF0
 		5'd11, 5'd10, 5'd09, 5'd08, 5'd07, 5'd06, 5'd05, 5'd04, // PF1 in reverse
-		5'd12, 5'd13, 5'd14, 5'd15, 5'd16, 5'd17, 5'd18, 5'd19  // PF2
+		5'd12, 5'd13, 5'd14, 5'd15, 5'd16, 5'd17, 5'd18, 5'd19, // PF2
+		5'd20                                                   // empty
 	};
 
 	logic [4:0] pf_latch;
 	logic dir;
 
-	assign pf_index = pf_reset ? 1'd0 : (hclk.level_p2 ? pf_latch1 : pf_latch2);
-	assign pf_next = dir ? (|pf_index ? pf_index - 1'd1 : 5'd0) : (pf_index < 19 ? pf_index + 1'd1 : 5'd19);
+	// This is a 20 bit parallel to serial converter (TIA-1A manual figure 5),
+	// so once both halves of the line have been shifted out it has nothing
+	// left to emit and PF reads low until the next [RHB]. That silence is what
+	// keeps an object frozen mid-draw across HBLANK from colliding with the
+	// last playfield pixel on every scanline. The count still holds at the
+	// mirrored centre, where PF2 D7 is emitted twice.
+	localparam PF_EMPTY = 5'd20;
+	wire [20:0] pf_bits = {1'b0, pfc};
 
-	assign pf_1 = pfc[index_lut[pf_index]];
+	assign pf_index = pf_reset ? 1'd0 : (hclk.level_p2 ? pf_latch1 : pf_latch2);
+	assign pf_next = (pf_index == PF_EMPTY) ? PF_EMPTY :
+		dir ? (|pf_index ? pf_index - 1'd1 : PF_EMPTY) :
+		(pf_index < 19 ? pf_index + 1'd1 : (reflect ? 5'd19 : PF_EMPTY));
+
+	assign pf_1 = pf_bits[index_lut[pf_index]];
 
 	f_cell pf_out
 	(
@@ -1561,7 +1574,7 @@ module video_stabilize
 	assign vblank = |mode ? vblank_in : vblank_en;
 	assign vsync = |mode ? vsync_in : vsync_en;
 	assign f1 = 1'b0; // |mode ? 1'b0 : midline_sync; // I could never make this work productively
-	assign auto_pal = |mode ? 1'b0 : total_lines >= 290;
+	assign auto_pal = total_lines >= 290;
 
 	always_ff @(posedge clk) begin
 		old_hblank <= hblank_in;
@@ -1813,16 +1826,6 @@ always_ff @(posedge clk) begin
 	phi2_delay <= pclk.level_p2; // Phi2 analog delay
 	i_out <= {4{~wreg[VBLANK][7]}};
 	if (pclk.edge_p2 || pclk.level_p2) begin
-		if (cs && RW_n) begin
-			if (addr[3:0] == INPT4 && ~wreg[VBLANK][6]) begin
-				d_out[7:6] <= {i4, 1'b0};
-			end else if (addr[3:0] == INPT5 && ~wreg[VBLANK][6]) begin
-				d_out[7:6] <= {i5, 1'b0};
-			end else if (~&addr[3:1]) begin
-				d_out[7:6] <= rreg[addr[3:0]][7:6]; // reads only use the lower 4 bits of addr
-			end else
-				d_out[7:6] <= 2'd0;
-		end
 		if (cs && ~RW_n && addr <= 6'h2C) begin
 			wreg[addr] <= d_in;
 
@@ -1855,9 +1858,27 @@ always_ff @(posedge clk) begin
 	end
 
 	if (rst) begin
-		d_out[7:6] <= 0;
 		wreg <= '{64{8'h00}};
 		wreg[VBLANK][1] <= 1;
+	end
+end
+
+// The bus drivers are asynchronous. Their stored sources live in rreg, but
+// registering the pin value on phase 2 makes it arrive after the CPU closes
+// its data latch on that same edge.
+always_comb begin
+	d_out = open_bus;
+	if (cs && RW_n) begin
+		if (addr[3:0] == INPT4 && ~wreg[VBLANK][6])
+			d_out[7] = i4;
+		else if (addr[3:0] == INPT5 && ~wreg[VBLANK][6])
+			d_out[7] = i5;
+		else if (~&addr[3:1]) begin
+			if (addr[3] || addr[3:0] == CXBLPF)
+				d_out[7] = rreg[addr[3:0]][7];
+			else
+				d_out[7:6] = rreg[addr[3:0]][7:6];
+		end
 	end
 end
 
@@ -1929,7 +1950,6 @@ playfield playfield
 	.clkp       (clkp),
 	.hclk       (hclk),
 	.rhb        (rhb),
-	.hblank     (hblank_o),
 	.reflect    (wreg[CTRLPF][0]),
 	.cnt        (cnt),
 	.pfc        ({wreg[PF2], wreg[PF1], wreg[PF0][7:4]}),
@@ -1965,7 +1985,7 @@ player pl1 (
 	.motck      (motck),
 	.pec        (p0ec),
 	.pre        (resp0),
-	.pvdel      (wreg[VDELP0]),
+	.pvdel      (wreg[VDELP0][0]),
 	.m2pr       (wreg[RESMP0][1]),
 	.pref       (wreg[REFP0][3]),
 	.nusiz      (wreg[NUSIZ0][5:0]),
@@ -1982,7 +2002,7 @@ player pl2 (
 	.motck      (motck),
 	.pec        (p1ec),
 	.pre        (resp1),
-	.pvdel      (wreg[VDELP1]),
+	.pvdel      (wreg[VDELP1][0]),
 	.m2pr       (wreg[RESMP1][1]),
 	.pref       (wreg[REFP1][3]),
 	.nusiz      (wreg[NUSIZ1][5:0]),
@@ -2025,7 +2045,7 @@ ball bal (
 	.blre       (resbl),
 	.blen       (wreg[ENABL][1]),
 	.blen_o     (wreg[ENBLO][1]),
-	.blvd       (wreg[VDELBL]),
+	.blvd       (wreg[VDELBL][0]),
 	.blsiz      (wreg[CTRLPF][5:4]),
 	.bl         (bl)
 );
@@ -2105,14 +2125,14 @@ always_ff @(posedge clk) begin : read_reg_block
 		{rreg[CXM0P][7:6], rreg[CXM1P][7:6], rreg[CXP0FB][7:6],
 			rreg[CXP1FB][7:6], rreg[CXM0FB][7:6], rreg[CXM1FB][7:6],
 			rreg[CXBLPF][7:6], rreg[CXPPMM][7:6]} <= '0;
-	end else if (oclk.level_p1 && ~vblank_o) begin
+	end else if (oclk.level_p2 && ~vblank_o) begin
 		rreg[CXM0P][7:6]  <= (rreg[CXM0P][7:6]  | {(m0 && p1), (m0 && p0)});
 		rreg[CXM1P][7:6]  <= (rreg[CXM1P][7:6]  | {(m1 && p0), (m1 && p1)});
-		rreg[CXP0FB][7:6] <= (rreg[CXP0FB][7:6] | {(~hblank_o && p0 && pf), (p0 && bl)});
-		rreg[CXP1FB][7:6] <= (rreg[CXP1FB][7:6] | {(~hblank_o && p1 && pf), (p1 && bl)});
-		rreg[CXM0FB][7:6] <= (rreg[CXM0FB][7:6] | {(~hblank_o && m0 && pf), (m0 && bl)});
-		rreg[CXM1FB][7:6] <= (rreg[CXM1FB][7:6] | {(~hblank_o && m1 && pf), (m1 && bl)});
-		rreg[CXBLPF][7:6] <= (rreg[CXBLPF][7:6] | {(~hblank_o && bl && pf), 1'b0});
+		rreg[CXP0FB][7:6] <= (rreg[CXP0FB][7:6] | {(p0 && pf), (p0 && bl)});
+		rreg[CXP1FB][7:6] <= (rreg[CXP1FB][7:6] | {(p1 && pf), (p1 && bl)});
+		rreg[CXM0FB][7:6] <= (rreg[CXM0FB][7:6] | {(m0 && pf), (m0 && bl)});
+		rreg[CXM1FB][7:6] <= (rreg[CXM1FB][7:6] | {(m1 && pf), (m1 && bl)});
+		rreg[CXBLPF][7:6] <= (rreg[CXBLPF][7:6] | {(bl && pf), 1'b0});
 		rreg[CXPPMM][7:6] <= (rreg[CXPPMM][7:6] | {(p0 && p1), (m0 && m1)});
 	end
 
@@ -2130,7 +2150,7 @@ always_ff @(posedge clk) begin : read_reg_block
 	end
 
 	if (pclk.edge_p2 && cs && ~RW_n) begin
-		if (addr[3:0] == VBLANK && d_in[6]) begin
+		if (addr == VBLANK && d_in[6]) begin
 			{rreg[INPT4][7], rreg[INPT5][7]} <= '1;
 		end
 	end
@@ -2141,4 +2161,3 @@ always_ff @(posedge clk) begin : read_reg_block
 end
 
 endmodule
-
