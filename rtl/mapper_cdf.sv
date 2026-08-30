@@ -180,7 +180,9 @@ module mapper_cdf
 				call_pending <= 1'b0;
 
 			if (access && a_in[12]) begin
-				if (a_in[11:0] >= 12'hFF4 && a_in[11:0] <= 12'hFFB) begin
+				// A substituted read returns before Stella's hotspot switch.
+				if (!stream_substitute &&
+					a_in[11:0] >= 12'hFF4 && a_in[11:0] <= 12'hFFB) begin
 					if (jplus)
 						bank <= (a_in[11:0] == 12'hFF4 ||
 							a_in[11:0] == 12'hFFB) ? 3'd0 : a_in[2:0] - 3'd4;

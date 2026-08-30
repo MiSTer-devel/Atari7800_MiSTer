@@ -90,7 +90,6 @@ package mos6502_pkg;
 	typedef struct packed {
 		// ---- bus drivers ---------------------------------------------------
 		logic dl_db, dl_adl, dl_adh;      // input data latch onto each bus
-		logic dl0_db;                     // only DB0 takes DL: ANC, ALR, ARR
 		logic pcl_db, pcl_adl;
 		logic pch_db, pch_adh;
 		logic s_sb, s_adl;                // stack pointer out latch

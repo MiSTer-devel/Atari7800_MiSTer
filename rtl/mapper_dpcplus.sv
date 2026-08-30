@@ -113,8 +113,11 @@ module mapper_dpcplus
 		register_read = rw && a_in[12] &&
 			((a_in[11:0] < 12'h028) ||
 			(fast_fetch && fast_pending && rom_data < 8'h28));
-		register_address = a_in[11:0] < 12'h028 ? a_in[5:0] :
-			{1'b0, rom_data[4:0]};
+		// Six bits, not five: the fetched operand addresses the whole $00-$27
+		// register file, so DFxFLAG at $20-$27 must not alias onto the random
+		// number and amplitude reads at $00-$07. DK Arcade reads DF3FLAG as
+		// `LDA #$23` to gate the ball, and five bits turned that into $03.
+		register_address = a_in[11:0] < 12'h028 ? a_in[5:0] : rom_data[5:0];
 		read_index = register_address[2:0];
 		read_function = register_address[5:3];
 		ram_register_read = register_read && read_function >= 3'd1 &&
@@ -222,7 +225,10 @@ module mapper_dpcplus
 				service_pending <= 1'b0;
 
 			if (access && a_in[12]) begin
-				if (a_in[11:0] >= 12'hFF6 && a_in[11:0] <= 12'hFFB)
+				// A fast-fetch operand redirects the address to the register
+				// file, so it never reaches Stella's hotspot switch.
+				if (!register_read &&
+					a_in[11:0] >= 12'hFF6 && a_in[11:0] <= 12'hFFB)
 					bank <= a_in[2:0] - 3'd6;
 
 				if (rw) begin

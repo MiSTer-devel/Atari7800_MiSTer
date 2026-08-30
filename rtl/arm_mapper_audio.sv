@@ -93,6 +93,7 @@ module arm_mapper_audio
 	logic [31:0] sample_offset_sum;
 	logic [14:0] waveform_base;
 	logic digital_mode;
+	logic jplus_sample;
 	logic [6:0] selected_dpc_waveform;
 
 	always_comb begin
@@ -100,8 +101,14 @@ module arm_mapper_audio
 		if (family == 2'd3)
 			waveform_base = revision == 2'd0 ? 15'h07F0 : 15'h01B0;
 
-		digital_mode = (family == 2'd2 && bus_digital_audio) ||
-			(family == 2'd3 && cdf_digital_audio);
+		// Only BUS3 has a sample register. BUS1/2 read their amplitude from
+		// $1018, which always sums the three waveforms, so their SETMODE 0
+		// must not divert this into the sample path.
+		digital_mode = (family == 2'd2 && revision == 2'd3 &&
+			bus_digital_audio) || (family == 2'd3 && cdf_digital_audio);
+		// Only CDFJ+ moved the sample window. BUS3 keeps the 21/20 split even
+		// though it shares the revision number.
+		jplus_sample = family == 2'd3 && revision == 2'd3;
 
 		case (voice)
 			2'd0: begin
@@ -259,8 +266,8 @@ module arm_mapper_audio
 					if (digital_mode) begin
 						digital_address <= ram_word_data +
 							(refresh_counter[0] >>
-							(revision == 2'd3 ? 5'd13 : 5'd21));
-						digital_low_nibble <= revision == 2'd3 ?
+							(jplus_sample ? 5'd13 : 5'd21));
+						digital_low_nibble <= jplus_sample ?
 							refresh_counter[0][12] : refresh_counter[0][20];
 						state <= AUDIO_DIGITAL_ROUTE;
 					end else begin

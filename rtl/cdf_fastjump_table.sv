@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Jamie Blanks
 
-// One bit per 6507-visible CDF program byte. The real cartridge can inspect
-// both JMP operands before replacing either; this table preserves that
+// One bit per 6507-visible CDF or BUS3 program byte. The real cartridge can
+// inspect both JMP operands before replacing either; this table preserves that
 // lookahead while the FPGA ROM remains on a byte-wide registered interface.
+// The first operand is admitted as 0 or 1, which is the CDFJ mask; the mappers
+// that want only 0 reject the odd case when they read the operand.
 module cdf_fastjump_table
 (
 	input  logic        clk_sys,

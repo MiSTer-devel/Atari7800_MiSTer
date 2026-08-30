@@ -336,15 +336,15 @@ module mos6502_ctl
 		             r.db7_n=1; r.dbz_z=1; end
 		D_ORA: begin r.ac_sb=1; r.sb_add=1; r.dl_db=1; r.db_add=1; r.ors =1; end
 		D_AND: begin r.ac_sb=1; r.sb_add=1; r.dl_db=1; r.db_add=1; r.ands=1; end
-		// ANC, ALR and ARR reach DB with bit 0 only. Bits 1-7 stay at the bus
-		// precharge, so the AND does nothing to them and the shift runs on
-		// the un-ANDed accumulator - but the shift's carry-out, which is
-		// (AI & BI) bit 0, still sees the operand. `ALR #$00` from A=$FF
-		// gives A=$7F with C=0 on the netlist: the result kept every bit the
-		// operand should have cleared, and the carry did not.
-		D_ANC: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.ands=1; end
-		D_ALR: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.srs=1; end
-		D_ARR: begin r.ac_sb=1; r.sb_add=1; r.dl0_db=1; r.db_add=1; r.srs=1;
+		// ANC, ALR and ARR take the whole operand, like AND does. The
+		// netlist puts only DB bit 0 on the bus for these three and leaves
+		// A alone; E X O depends on the community behaviour - `ANC #$07` at
+		// $FA4A masks a display list's graphics page - and it runs on real
+		// hardware, so Sally does the full AND. Decision 0071 supersedes 0010
+		// for this case.
+		D_ANC: begin r.ac_sb=1; r.sb_add=1; r.dl_db=1; r.db_add=1; r.ands=1; end
+		D_ALR: begin r.ac_sb=1; r.sb_add=1; r.dl_db=1; r.db_add=1; r.srs=1; end
+		D_ARR: begin r.ac_sb=1; r.sb_add=1; r.dl_db=1; r.db_add=1; r.srs=1;
 		             r.arr_d = BCD_EN & p[3]; end
 		// LAS also transfers S to X, off SB on this cycle - before ADD holds
 		// the AND result. It does not write S.
@@ -449,18 +449,17 @@ module mos6502_ctl
 		// ago, and only Z comes from the AND.
 		D_BIT:
 			begin r.dbz_z=1; wrote=1; end
-		// ANC's carry is a copy of bit 7 of the result, not an adder carry.
-		// The result never reaches A - see the operand note above - so only
-		// the flags land, and they describe the un-ANDed accumulator.
+		// ANC is AND plus one extra: C is a copy of bit 7 of the result,
+		// not an adder carry.
 		D_ANC:
-			begin r.db7_n=1; r.dbz_z=1; r.db7_c=1; wrote=1; end
+			begin r.sb_ac=1; r.db7_n=1; r.dbz_z=1; r.db7_c=1; wrote=1; end
 		D_ALR:
 			begin r.sb_ac=1; r.db7_n=1; r.dbz_z=1; r.acr_c=1; wrote=1; end
 		// ARR takes its flags from ADC as much as from ROR: C is bit 6 of the
 		// result and V is bit 6 against bit 5. In decimal mode a partial BCD
 		// correction runs on the result while N, V and Z still come from the
 		// value before it, and C comes from the high-nybble test instead of
-		// bit 6. The nybbles tested are A's; see mos6502_dp.sv.
+		// bit 6. The nybbles tested are the AND result's; see mos6502_dp.sv.
 		D_ARR:
 			begin r.sb_ac=1; r.db7_n=1; r.dbz_z=1; r.arr_flags=1;
 			      r.arr_daa = BCD_EN & p[3]; wrote=1; end

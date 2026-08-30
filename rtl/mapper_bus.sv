@@ -13,6 +13,7 @@ module mapper_bus
 	input  logic  [7:0] d_in,
 	input  logic  [7:0] rom_data,
 	input  logic  [1:0] revision,
+	input  logic        fast_jump_valid,
 
 	output logic        supported,
 	output logic  [7:0] d_out,
@@ -78,6 +79,8 @@ module mapper_bus
 	logic stream_read;
 	logic amplitude_read;
 	logic stream_write;
+	logic pointer_write;
+	logic [5:0] pointer_write_index;
 	logic stuff_candidate;
 	logic jump_substitute;
 	logic [5:0] stream_index;
@@ -99,8 +102,16 @@ module mapper_bus
 	assign stream_write = !rw && a_in[12] &&
 		((!bus3 && a_in[11:0] >= 12'h010 && a_in[11:0] <= 12'h013) ||
 		 (bus3 && a_in[11:0] == 12'hFF0));
+	// DSxPTR aims one stream, so the lookup has to name that stream: the
+	// stored value keeps the old pointer's top nibble.
+	assign pointer_write = !rw && a_in[12] &&
+		((!bus3 && a_in[11:0] >= 12'h014 && a_in[11:0] <= 12'h017) ||
+		 (bus3 && a_in[11:0] == 12'hFF1));
+	assign pointer_write_index = bus3 ? 6'd16 : {4'b0, a_in[1:0]};
+	// Stella compares the whole address against a byte, so only $0000-$00FF
+	// can ever stuff - a mirror such as $0284 must not.
 	assign stuff_candidate = !rw && !a_in[12] && stuff_target_valid &&
-		a_in[7:0] == stuff_target && a_in[6:0] <= 7'h24;
+		a_in[11:0] == {4'b0, stuff_target} && a_in[6:0] <= 7'h24;
 	assign jump_substitute = bus3 && program_read && jump_remaining != 0 &&
 		a_in == jump_operand_address && rom_data == 8'b0;
 
@@ -109,6 +120,8 @@ module mapper_bus
 			stream_index = 6'd17;
 		else if (stream_read || stream_write)
 			stream_index = bus3 ? 6'd16 : {2'b0, a_in[3:0]};
+		else if (pointer_write)
+			stream_index = pointer_write_index;
 		else if (stuff_state >= STUFF_STREAM)
 			stream_index = {2'b0, stuff_stream};
 		else
@@ -210,8 +223,9 @@ module mapper_bus
 			endcase
 
 			if (access && supported) begin
-				if (a_in[12] && a_in[11:0] >= 12'hFF5 &&
-					a_in[11:0] <= 12'hFFB)
+				// A substituted read returns before Stella's hotspot switch.
+				if (a_in[12] && !jump_substitute &&
+					a_in[11:0] >= 12'hFF5 && a_in[11:0] <= 12'hFFB)
 					bank <= a_in[2:0] - 3'd5;
 
 				if (program_read) begin
@@ -225,7 +239,8 @@ module mapper_bus
 						end else begin
 							jump_remaining <= 2'b0;
 						end
-					end else if (bus3 && fast_mode && rom_data == 8'h4C) begin
+					end else if (bus3 && fast_mode && rom_data == 8'h4C &&
+						fast_jump_valid) begin
 						jump_remaining <= 2'd2;
 						jump_operand_address <= a_in + 13'd1;
 					end
@@ -251,15 +266,18 @@ module mapper_bus
 					pointer_update_index <= stream_index;
 					pointer_update_value <= table_pointer + 32'h00100000;
 				end else if (!rw && a_in[12]) begin
-					if (!bus3 && a_in[11:0] >= 12'h014 && a_in[11:0] <= 12'h017) begin
+					if (pointer_write) begin
 						pointer_update <= 1'b1;
-						pointer_update_index <= {4'b0, a_in[1:0]};
+						pointer_update_index <= pointer_write_index;
 						pointer_update_value <=
 							({table_pointer[23:0], 8'b0} & 32'hF0000000) |
 							{4'b0, d_in, 20'b0};
 					end else if ((!bus3 && a_in[11:0] == 12'h019) ||
 						(bus3 && a_in[11:0] == 12'hFF2)) begin
-						mode <= d_in;
+						// Only BUS3 keeps the byte; BUS1/2's STUFFMODE stores
+						// nothing but "on" or "off".
+						mode <= bus3 ? d_in :
+							(d_in == 8'b0 ? 8'h00 : 8'h0F);
 					end else if (((!bus3 && a_in[11:0] == 12'h01A) ||
 						(bus3 && a_in[11:0] == 12'hFF3)) &&
 						(d_in == 8'hFE || d_in == 8'hFF) && !call_pending) begin
@@ -274,6 +292,10 @@ module mapper_bus
 					map_update_value <= {stuff_stream, stuff_map[31:4]};
 					stuff_target_valid <= 1'b0;
 					stuff_state <= STUFF_IDLE;
+				end else if (!rw && !a_in[12] && !stuff_candidate) begin
+					// One armed target, one write: Stella disarms on any poke
+					// below $1000, including one it declined to stuff.
+					stuff_target_valid <= 1'b0;
 				end
 			end
 		end

@@ -245,6 +245,26 @@ module Atari7800(
 	// the cycle that stalls is the following instruction fetch.
 	assign arm_call_stall = tia_en &&
 		(arm_call_busy || (!mapper_init_busy && arm_dma_busy));
+
+	// The stall holds the 6507 on one read cycle, and RDY releases inside that
+	// cycle, so the CPU consumes it without ever presenting it again. Hiding
+	// every phi2 of the stall therefore hides a cycle the CPU really made: CDF
+	// misses the `LDA #` opcode fetch that follows the CALLFN write, never arms
+	// its fast fetcher, and hands the 6507 the stream index from ROM instead of
+	// the stream's byte. Show the mapper the first phi2 of the stall - the same
+	// address the CPU ends up completing - and hide the repeats.
+	//
+	//   phi2   ...  write $1FF3 | fetch | fetch | ... | fetch | operand
+	//   stall            0      |   1   |   1   |     |   1   |    0
+	//   mapper           take   | take  |  hide |     |  hide |  take
+	logic stall_cycle_taken;
+	always_ff @(posedge clk_sys) begin
+		if (!arm_call_stall)
+			stall_cycle_taken <= 1'b0;
+		else if (pclk0)
+			stall_cycle_taken <= 1'b1;
+	end
+	wire mapper_phi2 = pclk0 && (!arm_call_stall || !stall_cycle_taken);
 	assign RDY = maria_RDY && tia_RDY && (~tia_en || tia_RDY_seen_high) &&
 		!arm_call_stall;
 	assign cpu_halt_n = (ctrl_writes == 2'd2) ? halt_n : 1'b1;
@@ -545,7 +565,10 @@ module Atari7800(
 		.ram_init_7800(~tia_mode),
 		.addr         (AB[6:0]),
 		.RW_n         (RW),
-		.d_in         (write_DB),
+		// Bus stuffing pulls the data lines low for any write off the cartridge,
+		// zero page included: BUS Draconian builds a JMP vector in RIOT RAM out
+		// of stuffed bytes, so the RIOT has to see the same bus the TIA does.
+		.d_in         (physical_write_DB),
 		.d_out        (riot_DB_out),
 		.RS_n         (AB[9]),
 		.IRQ_n        (),
@@ -819,10 +842,8 @@ module Atari7800(
 		.clk            (clk_sys),
 		.ce             (cart_ce_2600),
 		.phi1           (pclk1),
-		// Held with the CPU: the stalled cycle is one held read, and a mapper
-		// that saw a phi2 for each of its clk_sys ticks would count it many
-		// times over.
-		.phi2           (pclk0 && !arm_call_stall),
+		// Held with the CPU: the stalled cycle is one held read, seen once.
+		.phi2           (mapper_phi2),
 		.sc             (sc),
 		.mapper         (|mapper ? mapper : force_bs),
 		.mapper_revision(mapper_revision),

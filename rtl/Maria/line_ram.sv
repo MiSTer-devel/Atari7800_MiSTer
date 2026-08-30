@@ -39,8 +39,6 @@ module line_ram(
 	input  logic               BORDER_CONTROL,
 	input  logic               COLOR_KILL,
 	input  logic               lrc,
-	// VGA Control signal
-	input  logic [8:0]         LRAM_OUT_COL,
 	input  logic               mclk0,
 	input  logic               mclk1,
 	input  logic               cram_write
@@ -288,9 +286,14 @@ always_comb begin
 			//      [P2 D1 D0 D5  0]
 			//      [P2 D1 D0 D4  0]
 			// Again, these can be written into the cells in
-			// the same format and read out differently. Note:
-			// transparency may not be correct in 320B mode here
-			// since the color bits are different than 160B and 320C.
+			// the same format and read out differently. The write
+			// gate is the cell's own two color bits and nothing
+			// else - MARIA's LINBUF sheet 4 has no RM input - so a
+			// 320B pair with D7 and D6 both clear stays transparent
+			// however D3 and D2 are set, and the off member of a
+			// mixed pair shows its own color bits. Both look wrong
+			// and are the part's own behaviour. See
+			// .agents/decisions/0072-maria-line-ram-transparency-is-the-cells-color-field.md
 			cell_wr[0] = |d_in[7:6] || KANGAROO_MODE;
 			cell_data[0] = {PALETTE[2], d_in[3:2], d_in[7:6]};
 			cell_wr[1] = |d_in[5:4] || KANGAROO_MODE;

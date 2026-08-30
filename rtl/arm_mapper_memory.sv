@@ -445,6 +445,14 @@ module arm_mapper_memory
 	logic [31:0] mamcr;
 	logic [31:0] timer_control;
 	logic [31:0] timer_count;
+	// The Harmony/Melody's LPC2103 counts its timer at 70 MHz; clk_arm is
+	// 71.590909 MHz (5 x clk_sys), so 44 of every 45 clk_arm ticks is 70 MHz
+	// exactly. Titles that budget a frame against this timer - Draconian reads
+	// T1TC and compares it with 1,171,987 - see a 2.3% overrun without it.
+	localparam int TIMER_PERIOD = 45;
+	localparam int TIMER_SKIP   = 45 - 44;
+	logic  [5:0] timer_phase;
+	wire         timer_tick = timer_phase >= TIMER_SKIP[5:0];
 
 	typedef enum logic [1:0] {
 		DMA_IDLE,
@@ -518,8 +526,12 @@ module arm_mapper_memory
 	wire dec_rom = mem_addr < rom_size;
 	wire dec_ram = mem_addr >= 32'h40000000 &&
 		mem_addr < 32'h40000000 + {16'b0, mapper_ram_size};
-	wire dec_mmio = mem_addr == 32'hE01FC000 ||
-		mem_addr == 32'hE0008004 || mem_addr == 32'hE0008008;
+	// The whole APB peripheral window. Beside the two timer registers modelled
+	// here the drivers also program the PLL, MEMMAP, MAM timing, both PINSELs
+	// and TIMER0 - Draconian's PLL block at ROM $40, every CDFJ+ driver's
+	// MAMTIM write at $94. None of those fault on the real part, so none may
+	// fault here; the ones with no model read as zero and drop their writes.
+	wire dec_mmio = mem_addr[31:21] == 11'h700;
 	wire dec_ok = req_phase && !dec_sentinel && !dec_bad;
 
 	wire hit_sentinel = req_phase && dec_sentinel;
@@ -537,8 +549,10 @@ module arm_mapper_memory
 	wire hit_mmio     = dec_ok && !dec_rom && !dec_ram && dec_mmio;
 	wire hit_none     = dec_ok && !dec_rom && !dec_ram && !dec_mmio;
 
-	wire [31:0] mmio_rdata = mem_addr == 32'hE01FC000 ? mamcr :
-		(mem_addr == 32'hE0008004 ? timer_control : timer_count);
+	wire [31:0] mmio_rdata =
+		mem_addr == 32'hE01FC000 ? mamcr :
+		mem_addr == 32'hE0008004 ? timer_control :
+		mem_addr == 32'hE0008008 ? timer_count : 32'b0;
 
 	// Answers driven straight out of a state that already holds the data.
 	wire cache_hit_now = bus_state == BUS_CACHE_CHECK &&
@@ -645,6 +659,7 @@ module arm_mapper_memory
 			mamcr <= '0;
 			timer_control <= '0;
 			timer_count <= '0;
+			timer_phase <= '0;
 		end else begin
 			word_sync1 <= word_toggle;
 			word_sync2 <= word_sync1;
@@ -658,7 +673,9 @@ module arm_mapper_memory
 			sample_sync2 <= sample_sync1;
 			fill_done <= 1'b0;
 
-			if (timer_control[0])
+			timer_phase <= (timer_phase == TIMER_PERIOD[5:0] - 6'd1) ?
+				6'd0 : timer_phase + 6'd1;
+			if (timer_control[0] && timer_tick)
 				timer_count <= timer_count + 32'd1;
 
 			if (epoch_sync2 != epoch_seen) begin
@@ -870,8 +887,9 @@ module arm_mapper_memory
 										mamcr <= apply_strobes(mamcr, mem_wdata, mem_wstrb);
 									32'hE0008004:
 										timer_control <= apply_strobes(timer_control, mem_wdata, mem_wstrb);
-									default:
+									32'hE0008008:
 										timer_count <= apply_strobes(timer_count, mem_wdata, mem_wstrb);
+									default: ;
 								endcase
 							end
 

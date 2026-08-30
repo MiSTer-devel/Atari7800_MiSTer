@@ -295,7 +295,8 @@ module cart2600
 	logic bus_digital_audio;
 	logic cdf_digital_audio;
 	logic [7:0] arm_audio_amplitude;
-	logic cdf_fast_jump_valid;
+	logic fast_jump_valid;
+	logic [14:0] fast_jump_query_addr;
 	logic audio_ram_en;
 	logic [16:0] audio_ram_addr;
 	logic audio_ram_grant;
@@ -714,7 +715,7 @@ module cart2600
 		.enable_ldy             (cdf_ldy),
 		.fetch_offset_enable    (cdf_fetch_offset_enable),
 		.fetch_offset           (cdf_fetch_offset),
-		.fast_jump_valid        (cdf_fast_jump_valid),
+		.fast_jump_valid,
 		.d_out                  (direct_do[BANKCDF]),
 		.flags_out              (flags_out[BANKCDF]),
 		.oe                     (out_en[BANKCDF]),
@@ -741,14 +742,19 @@ module cart2600
 		.cdfj_stack
 	);
 
-	cdf_fastjump_table cdf_jump_table (
+	// CDF and BUS3 both ask the same question of the same map, and only one of
+	// them is selected at a time.
+	assign fast_jump_query_addr = mapper == BANKBUS ?
+		rom_addr[BANKBUS][14:0] : rom_addr[BANKCDF][14:0];
+
+	cdf_fastjump_table jump_table (
 		.clk_sys    (clk),
 		.load_start,
 		.load_addr,
 		.load_valid,
 		.load_data,
-		.query_addr (rom_addr[BANKCDF][14:0]),
-		.query_valid(cdf_fast_jump_valid)
+		.query_addr (fast_jump_query_addr),
+		.query_valid(fast_jump_valid)
 	);
 
 	assign ram_sel[BANKCDF] = cdf_ram_en;
@@ -764,6 +770,7 @@ module cart2600
 		.d_in,
 		.rom_data               (rom_do),
 		.revision               (mapper_revision[1:0]),
+		.fast_jump_valid,
 		.supported              (),
 		.d_out                  (direct_do[BANKBUS]),
 		.flags_out              (flags_out[BANKBUS]),
