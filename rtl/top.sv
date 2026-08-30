@@ -175,6 +175,12 @@ module Atari7800(
 	logic [15:0]    last_address;
 	logic           pclk1, pclk0, pclk1_m, pclk0_m, pclk1_t, pclk0_t;
 	logic           pclk1_raw, pclk0_raw;
+	logic           phase_source_tia;
+	logic           phase_edge_source_tia;
+	logic           phase_source_stable;
+	logic           phase_valid;
+	logic           reset_hold = 1'b1;
+	logic [1:0]     reset_phase_wait = 2'd0;
 	logic           tia_clk_x2;
 	logic           read_2600;
 	logic [1:0]     pause_clock;
@@ -185,10 +191,44 @@ module Atari7800(
 	logic [7:0]     cartram_data_bram;
 	logic           arm_call_stall;
 
+	wire tia_clock_after_reset = cpu_driver && bypass_bios && tia_mode;
+	wire effective_reset = reset | reset_hold;
+	// SALLY must receive real clock enables to recognize reset. MARIA remains
+	// the source throughout the shared held reset; the optional TIA source is a
+	// phase-safe handoff after every chip has left reset together.
+	wire phase_source_request_tia = cpu_driver && !effective_reset &&
+		ctrl_writes == 2'd2 && tia_en;
+	wire first_phase_is_phi1 = bypass_bios && tia_mode &&
+		!tia_clock_after_reset;
+
+	// Reset assertion is immediate. Release lands on the phase before the first
+	// one the CPU acts on, so that first visible edge is still source-caused.
+	always_ff @(posedge clk_sys) begin
+		if (reset) begin
+			reset_hold <= 1'b1;
+			reset_phase_wait <= 2'd0;
+		end
+		else if (reset_hold && phase_source_stable && phase_valid &&
+			!phase_source_tia) begin
+			if (first_phase_is_phi1) begin
+				// On the bypassed 2600/MARIA path release lands midway
+				// through the high phase, two master half-cycles in.
+				if (reset_phase_wait == 2'd1)
+					reset_hold <= 1'b0;
+				else if (reset_phase_wait != 2'd0)
+					reset_phase_wait <= reset_phase_wait - 1'd1;
+				else if (pclk0)
+					reset_phase_wait <= 2'd3;
+			end else if (pclk1) begin
+				reset_hold <= 1'b0;
+			end
+		end
+	end
+
 	// In 2600 mode SHB and the CPU phase can collapse onto one clk_sys tick.
 	// Require release to survive a phase-1 sample; assertion stays immediate.
 	always_ff @(posedge clk_sys) begin
-		if (reset)
+		if (effective_reset)
 			tia_RDY_seen_high <= 1'b1;
 		else if (!tia_RDY)
 			tia_RDY_seen_high <= 1'b0;
@@ -243,14 +283,23 @@ module Atari7800(
 		endcase
 		RW = cpu_released ? 1'b1 : cpu_rwn;
 
-		if (cpu_driver && tia_en) begin
-			pclk0_raw = pclk0_t;
-			pclk1_raw = pclk1_t;
-		end else begin
-			pclk0_raw = pclk0_m;
-			pclk1_raw = pclk1_m;
-		end
 	end
+
+	cpu_phase_controller phase_controller
+	(
+		.clk_sys        (clk_sys),
+		.request_tia    (phase_source_request_tia),
+		.maria_phi1     (pclk1_m),
+		.maria_phi2     (pclk0_m),
+		.tia_phi1       (pclk1_t),
+		.tia_phi2       (pclk0_t),
+		.phi1           (pclk1_raw),
+		.phi2           (pclk0_raw),
+		.active_tia     (phase_source_tia),
+		.edge_source_tia(phase_edge_source_tia),
+		.source_stable  (phase_source_stable),
+		.phase_valid    (phase_valid)
+	);
 
 	assign dout = write_DB;
 
@@ -284,7 +333,7 @@ module Atari7800(
 	logic [3:0] maria_luma, maria_chroma;
 
 	maria maria_inst(
-		.ce             (~pause),
+		.ce             (~pause || effective_reset),
 		.mclk0          (mclk0),
 		.mclk1          (mclk1),
 		.tia_clk_x2     (tia_clk_x2),
@@ -297,11 +346,11 @@ module Atari7800(
 		.d_in           (read_DB),
 		.write_DB_in    (write_DB),
 		.DB_out         (maria_DB_out),
-		.reset          (reset),
+		.reset          (effective_reset),
 		.clk_sys        (clk_sys),
 		.pclk0          (pclk0_m),
 		.pclk1          (pclk1_m),
-		.pclk2          (pclk0_m),
+		.pclk2          (pclk0),
 		.RW             (RW),
 		.maria_en       (maria_en),
 		.YC             ({maria_chroma, maria_luma}),
@@ -330,7 +379,7 @@ module Atari7800(
 	(
 		.clk            (clk_sys),
 		.ce             (tia_clk_x2),     // Clock enable for CLK generation only
-		.is_7800        (~(cpu_driver && tia_en)),
+		.is_7800        (~(phase_source_tia || phase_edge_source_tia)),
 		.phi0           (pclk0_t),
 		.phi1           (pclk1_t),
 		.phi2           (pclk0),
@@ -351,7 +400,7 @@ module Atari7800(
 		.sync           (),
 		.cs0_n          (~cs_tia),
 		.cs2_n          (~cs_tia),
-		.rst            (reset),
+		.rst            (effective_reset),
 		.video_ce       (tia_pix_ce),
 		.vblank         (tia_vblank),
 		.hblank         (),
@@ -488,11 +537,11 @@ module Atari7800(
 	(
 		.clk          (clk_sys),
 		.ce           (pclk0),     // PHI 2 Clock enable
-		.res_n        (~reset),
+		.res_n        (~effective_reset),
 		// The chip's RES leaves RIOT RAM alone, so the console owns the power
 		// up image. A 7800 gets the loader the BIOS would have left behind; a
 		// 2600 never had one, so it starts from zero.
-		.ram_init     (reset),
+		.ram_init     (effective_reset),
 		.ram_init_7800(~tia_mode),
 		.addr         (AB[6:0]),
 		.RW_n         (RW),
@@ -519,7 +568,7 @@ module Atari7800(
 		.phi1_ce      (pclk1),
 		.phi2_ce      (pclk0),
 		.clk_sys      (clk_sys),
-		.reset        (reset),
+		.reset        (effective_reset),
 		.AB           (cpu_AB),
 		.DB_IN        (read_DB),
 		.DB_OUT       (write_DB),
@@ -539,7 +588,7 @@ module Atari7800(
 		.d_in         (write_DB[3:0]),
 		.cs           (cs_tia),
 		.latch_b      (RW | lock_ctrl),
-		.rst          (reset),
+		.rst          (effective_reset),
 		.lock_out     (lock_ctrl),
 		.bypass_bios  (bypass_bios),
 		.maria_en_out (maria_en),
@@ -561,68 +610,16 @@ module Atari7800(
 	//////////////////////
 	// ARM mapper (2600) //
 	//////////////////////
-	// One ARM7TDMI serves the DPC+, BUS and CDF front ends in cart2600. It
-	// shares the cart RAM with them through cart_ram_tdp's second port, so it
-	// belongs inside the core; only the load stream, DDR3 and the FA2 NVRAM
-	// file cross back out to the framework.
-
-	logic        arm_shadow_ready;
-	logic        arm_halted;
-	logic [15:0] mapper_ram_size;
-	logic        mapper_dma_request, mapper_dma_fill;
-	logic [24:0] mapper_dma_source;
-	logic [16:0] mapper_dma_dest;
-	logic [17:0] mapper_dma_count;
-	logic  [7:0] mapper_dma_value;
-	logic        mapper_dma_ready, mapper_dma_done;
-	logic        dpc_service_request, dpc_service_fill;
-	logic [18:0] dpc_service_source;
-	logic [14:0] dpc_service_dest;
-	logic  [7:0] dpc_service_count, dpc_service_value;
-	logic        dpc_service_ready;
-	logic        arm_dma_request, arm_dma_fill;
-	logic [24:0] arm_dma_source;
-	logic [16:0] arm_dma_dest;
-	logic [17:0] arm_dma_count;
-	logic  [7:0] arm_dma_value;
-	logic        arm_dma_ready, arm_dma_busy, arm_dma_done;
-	logic        arm_call_request, arm_call_thumb;
-	logic [31:0] arm_call_entry, arm_call_stack;
-	logic        arm_call_ready, arm_call_busy, arm_call_done;
-	logic [31:0] arm_audio_counter0, arm_audio_counter1, arm_audio_counter2;
-	logic [31:0] arm_audio_frequency0, arm_audio_frequency1, arm_audio_frequency2;
-	logic [31:0] arm_audio_counter0_return, arm_audio_counter1_return;
-	logic [31:0] arm_audio_counter2_return;
-	logic [31:0] arm_audio_frequency0_return, arm_audio_frequency1_return;
-	logic [31:0] arm_audio_frequency2_return;
-	logic        arm_sample_request, arm_sample_ready, arm_sample_busy;
-	logic        arm_sample_done;
-	logic [24:0] arm_sample_addr;
-	logic  [7:0] arm_sample_data;
-	logic        arm_cartram_en, arm_cartram_write;
-	logic [14:0] arm_cartram_addr;
-	logic [31:0] arm_cartram_wdata;
-	logic  [3:0] arm_cartram_wstrb;
-	logic        arm_cartram_accepted;
-	logic [31:0] arm_cartram_rdata;
-
-	// The ARM has one DMA engine. The mapper's own initialization owns it
-	// while it runs; afterwards it belongs to the DPC+ fetcher service.
-	assign arm_dma_request = mapper_init_busy ? mapper_dma_request :
-		dpc_service_request;
-	assign arm_dma_fill = mapper_init_busy ? mapper_dma_fill : dpc_service_fill;
-	assign arm_dma_source = mapper_init_busy ? mapper_dma_source :
-		{6'b0, dpc_service_source};
-	assign arm_dma_dest = mapper_init_busy ? mapper_dma_dest :
-		{2'b0, dpc_service_dest};
-	assign arm_dma_count = mapper_init_busy ? mapper_dma_count :
-		{10'b0, dpc_service_count};
-	assign arm_dma_value = mapper_init_busy ? mapper_dma_value : dpc_service_value;
-	assign mapper_dma_ready = mapper_init_busy && arm_dma_ready;
-	assign mapper_dma_done = mapper_init_busy && arm_dma_done;
-	assign dpc_service_ready = !mapper_init_busy && arm_dma_ready;
+	// One ARM7TDMI serves the DPC+, BUS and CDF front ends in cart2600. The
+	// 2600 profile - the call controller and the mapper's memory system - lives
+	// there with them, sharing the cart RAM through cart_ram_tdp's second port.
+	// Only this bus, the DDR3 channel, the load stream and the FA2 NVRAM file
+	// cross back out to the framework.
 
 	// CDFJ+ scales its RAM with the ROM; everything else takes the 8K default.
+	// Kept here because it reads force_bs, which is the core's own selection
+	// rather than the mapper cart2600 ends up running.
+	logic [15:0] mapper_ram_size;
 	always_comb begin
 		mapper_ram_size = 16'd8192;
 		if (force_bs == BANKCDF && mapper_revision == 3'd3) begin
@@ -635,119 +632,112 @@ module Atari7800(
 		end
 	end
 
+	logic        arm_ddr_req, arm_ddr_rnw, arm_ddr_ack, arm_ddr_rvalid;
+	logic [28:0] arm_ddr_addr;
+	logic [63:0] arm_ddr_din, arm_ddr_dout;
+	logic  [7:0] arm_ddr_be, arm_ddr_len;
+
+	logic        arm_halt_req, arm_halted;
+	logic        arm_mem_req, arm_mem_ready, arm_mem_abort, arm_mem_write;
+	logic        arm_mem_fetch;
+	logic [31:0] arm_mem_addr, arm_mem_wdata, arm_mem_rdata;
+	logic  [1:0] arm_mem_size;
+	logic  [3:0] arm_mem_wstrb;
+	logic        arm_state_req, arm_state_write, arm_state_ready;
+	logic        arm_state_commit;
+	logic  [5:0] arm_state_index;
+	logic [31:0] arm_state_wdata, arm_state_rdata;
+
+	logic        arm_call_busy, arm_dma_busy;
+	logic        arm_ram_en, arm_ram_write;
+	logic [14:0] arm_ram_addr;
+	logic [31:0] arm_ram_wdata, arm_ram_rdata;
+	logic  [3:0] arm_ram_wstrb;
+	logic        arm_ram_accepted;
+
 `ifndef NO_ARM_MAPPER
-	arm_mapper_subsystem arm_mappers (
-		.clk_sys,
-		.reset_sys       (arm_reset),
-		.mapper_reset    (reset),
-		.load_start      (mapper_load_start),
-		.load_addr       (mapper_load_addr),
-		.load_valid      (mapper_load_valid),
-		.load_end        (mapper_load_end),
-		.load_size       (cart_size),
-		.load_data       (mapper_load_data),
-		.load_wait       (mapper_load_wait),
+	arm_host arm_host (
 		.clk_arm,
 		.reset_arm       (arm_reset),
-		.shadow_ready    (arm_shadow_ready),
-		.mapper_ram_size,
-		.dma_request     (arm_dma_request),
-		.dma_fill        (arm_dma_fill),
-		.dma_source      (arm_dma_source),
-		.dma_dest        (arm_dma_dest),
-		.dma_count       (arm_dma_count),
-		.dma_value       (arm_dma_value),
-		.dma_ready       (arm_dma_ready),
-		.dma_busy        (arm_dma_busy),
-		.dma_done        (arm_dma_done),
-		.sample_request  (arm_sample_request),
-		.sample_addr     (arm_sample_addr),
-		.sample_ready    (arm_sample_ready),
-		.sample_busy     (arm_sample_busy),
-		.sample_done     (arm_sample_done),
-		.sample_data     (arm_sample_data),
-		.call_request    (arm_call_request),
-		.call_entry      (arm_call_entry),
-		.call_stack      (arm_call_stack),
-		.call_thumb      (arm_call_thumb),
-		.audio_counter0  (arm_audio_counter0),
-		.audio_counter1  (arm_audio_counter1),
-		.audio_counter2  (arm_audio_counter2),
-		.audio_frequency0(arm_audio_frequency0),
-		.audio_frequency1(arm_audio_frequency1),
-		.audio_frequency2(arm_audio_frequency2),
-		.call_ready      (arm_call_ready),
-		.call_busy       (arm_call_busy),
-		.call_done       (arm_call_done),
-		.audio_counter0_return  (arm_audio_counter0_return),
-		.audio_counter1_return  (arm_audio_counter1_return),
-		.audio_counter2_return  (arm_audio_counter2_return),
-		.audio_frequency0_return(arm_audio_frequency0_return),
-		.audio_frequency1_return(arm_audio_frequency1_return),
-		.audio_frequency2_return(arm_audio_frequency2_return),
-		.arm_halted,
-		.ram_en          (arm_cartram_en),
-		.ram_write       (arm_cartram_write),
-		.ram_addr        (arm_cartram_addr),
-		.ram_wdata       (arm_cartram_wdata),
-		.ram_wstrb       (arm_cartram_wstrb),
-		.ram_accepted    (arm_cartram_accepted),
-		.ram_rdata       (arm_cartram_rdata),
-		.ddram_clk,
-		.ddram_addr,
-		.ddram_burstcnt,
-		.ddram_busy,
-		.ddram_dout,
-		.ddram_dout_ready,
-		.ddram_rd,
-		.ddram_din,
-		.ddram_be,
-		.ddram_we
+		.halt_req        (arm_halt_req),
+		.halted          (arm_halted),
+		.mem_req         (arm_mem_req),
+		.mem_ready       (arm_mem_ready),
+		.mem_abort       (arm_mem_abort),
+		.mem_addr        (arm_mem_addr),
+		.mem_write       (arm_mem_write),
+		.mem_wdata       (arm_mem_wdata),
+		.mem_rdata       (arm_mem_rdata),
+		.mem_size        (arm_mem_size),
+		.mem_wstrb       (arm_mem_wstrb),
+		.mem_seq         (),
+		.mem_fetch       (arm_mem_fetch),
+		.mem_privileged  (),
+		.mem_lock        (),
+		.retire          (),
+		.state_req       (arm_state_req),
+		.state_write     (arm_state_write),
+		.state_index     (arm_state_index),
+		.state_wdata     (arm_state_wdata),
+		.state_rdata     (arm_state_rdata),
+		.state_ready     (arm_state_ready),
+		.state_commit    (arm_state_commit)
 	);
 `else
 	// Simulation builds that leave the ARM sources out.
-	assign mapper_load_wait = 1'b0;
-	assign arm_shadow_ready = 1'b0;
 	assign arm_halted = 1'b1;
-	assign arm_dma_ready = 1'b0;
-	assign arm_dma_busy = 1'b0;
-	assign arm_dma_done = 1'b0;
-	assign arm_sample_ready = 1'b0;
-	assign arm_sample_busy = 1'b0;
-	assign arm_sample_done = 1'b0;
-	assign arm_sample_data = 8'b0;
-	assign arm_call_ready = 1'b0;
-	assign arm_call_busy = 1'b0;
-	assign arm_call_done = 1'b0;
-	assign arm_audio_counter0_return = 32'b0;
-	assign arm_audio_counter1_return = 32'b0;
-	assign arm_audio_counter2_return = 32'b0;
-	assign arm_audio_frequency0_return = 32'b0;
-	assign arm_audio_frequency1_return = 32'b0;
-	assign arm_audio_frequency2_return = 32'b0;
-	assign arm_cartram_en = 1'b0;
-	assign arm_cartram_write = 1'b0;
-	assign arm_cartram_addr = 15'b0;
-	assign arm_cartram_wdata = 32'b0;
-	assign arm_cartram_wstrb = 4'b0;
-	assign ddram_clk = 1'b0;
-	assign ddram_addr = 29'b0;
-	assign ddram_burstcnt = 8'b0;
-	assign ddram_rd = 1'b0;
-	assign ddram_din = 64'b0;
-	assign ddram_be = 8'b0;
-	assign ddram_we = 1'b0;
+	assign arm_mem_req = 1'b0;
+	assign arm_mem_addr = 32'b0;
+	assign arm_mem_write = 1'b0;
+	assign arm_mem_wdata = 32'b0;
+	assign arm_mem_size = 2'b0;
+	assign arm_mem_wstrb = 4'b0;
+	assign arm_mem_fetch = 1'b0;
+	assign arm_state_rdata = 32'b0;
+	assign arm_state_ready = 1'b0;
 `endif
+
+	// One DDR3 port, one bridge. Both consumers live inside the core, so the
+	// arbitration belongs here rather than in the MiSTer wrapper. Channel 2 is
+	// idle until the BupChip profile claims it.
+	ddram ddr_bridge (
+		.clk              (clk_arm),
+		.reset            (arm_reset),
+		.DDRAM_CLK        (ddram_clk),
+		.DDRAM_BUSY       (ddram_busy),
+		.DDRAM_BURSTCNT   (ddram_burstcnt),
+		.DDRAM_ADDR       (ddram_addr),
+		.DDRAM_DOUT       (ddram_dout),
+		.DDRAM_DOUT_READY (ddram_dout_ready),
+		.DDRAM_RD         (ddram_rd),
+		.DDRAM_DIN        (ddram_din),
+		.DDRAM_BE         (ddram_be),
+		.DDRAM_WE         (ddram_we),
+		.ch1_addr         (arm_ddr_addr),
+		.ch1_din          (arm_ddr_din),
+		.ch1_be           (arm_ddr_be),
+		.ch1_len          (arm_ddr_len),
+		.ch1_req          (arm_ddr_req),
+		.ch1_rnw          (arm_ddr_rnw),
+		.ch1_ack          (arm_ddr_ack),
+		.ch1_dout         (arm_ddr_dout),
+		.ch1_rvalid       (arm_ddr_rvalid),
+		.ch2_addr         (29'b0),
+		.ch2_din          (64'b0),
+		.ch2_be           (8'b0),
+		.ch2_len          (8'd1),
+		.ch2_req          (1'b0),
+		.ch2_rnw          (1'b1),
+		.ch2_ack          (),
+		.ch2_dout         (),
+		.ch2_rvalid       ()
+	);
+
 `ifndef EXTERNAL_CARTRAM
 	logic [7:0] cartram_data_tdp;
 	logic [31:0] cartram_word_data_tdp;
-	logic mapper_wb_en;
-	logic mapper_wb_write;
-	logic [14:0] mapper_wb_addr;
-	logic [31:0] mapper_wb_wdata;
-	logic [3:0] mapper_wb_wstrb;
-	logic mapper_wb_accepted;
-	logic arm_ram_accepted;
+	// The 7800 path shares this RAM, so it stays in the core. cart2600 already
+	// arbitrated its writeback against the ARM, and hands over one port.
 	cart_ram_tdp cart_ram
 	(
 		.clk_sys,
@@ -757,30 +747,21 @@ module Atari7800(
 		.mapper_wdata (cartram_wrdata),
 		.mapper_rdata (cartram_data_tdp),
 		.clk_arm,
-		.arm_en       (mapper_wb_en || arm_cartram_en),
-		.arm_write    (mapper_wb_en ? mapper_wb_write : arm_cartram_write),
-		.arm_addr     (mapper_wb_en ? mapper_wb_addr : arm_cartram_addr),
-		.arm_wdata    (mapper_wb_en ? mapper_wb_wdata : arm_cartram_wdata),
-		.arm_wstrb    (mapper_wb_en ? mapper_wb_wstrb : arm_cartram_wstrb),
-		.arm_rdata    (arm_cartram_rdata),
+		.arm_en       (arm_ram_en),
+		.arm_write    (arm_ram_write),
+		.arm_addr     (arm_ram_addr),
+		.arm_wdata    (arm_ram_wdata),
+		.arm_wstrb    (arm_ram_wstrb),
+		.arm_rdata    (arm_ram_rdata),
 		.arm_accepted (arm_ram_accepted),
 		.mapper_word_rdata(cartram_word_data_tdp)
 	);
-	assign arm_cartram_accepted = arm_cartram_en && !mapper_wb_en &&
-		arm_ram_accepted;
-	assign mapper_wb_accepted = mapper_wb_en && arm_ram_accepted;
 	assign cartram_data_bram = pause ? 8'hFF : cartram_data_tdp;
 `else
 	assign cartram_data_bram = cartram_data;
-	assign arm_cartram_rdata = 32'b0;
-	assign arm_cartram_accepted = 1'b0;
+	assign arm_ram_rdata = 32'b0;
+	assign arm_ram_accepted = 1'b0;
 	assign cartram_word_data_tdp = 32'b0;
-	wire mapper_wb_en;
-	wire mapper_wb_write;
-	wire [14:0] mapper_wb_addr;
-	wire [31:0] mapper_wb_wdata;
-	wire [3:0] mapper_wb_wstrb;
-	wire mapper_wb_accepted = 1'b0;
 `endif
 
 	cart cart
@@ -790,7 +771,7 @@ module Atari7800(
 		.pclk1          (pclk1),
 		.IRQ_n          (IRQ_n),
 		.halt_n         (cpu_halt_n),
-		.reset          (reset),
+		.reset          (effective_reset),
 		.address_in     (AB[15:0]),
 		.din            (write_DB),
 		.rom_din        (cart_out),
@@ -834,7 +815,7 @@ module Atari7800(
 		.d_in           (cart_din),
 		.a_in           (AB[12:0]),
 		.rw             (RW),
-		.reset          (reset),
+		.reset          (effective_reset),
 		.clk            (clk_sys),
 		.ce             (cart_ce_2600),
 		.phi1           (pclk1),
@@ -862,34 +843,53 @@ module Atari7800(
 		.cartram_wrdata (cartram_wrdata26),
 		.cartram_data   (cartram_data_bram),
 		.clk_arm,
-		.arm_cartram_en,
-		.arm_cartram_write,
-		.arm_cartram_accepted,
-		.arm_cartram_addr,
-		.arm_cartram_wdata,
-		.arm_cartram_wstrb,
+		.reset_arm      (arm_reset),
 		.cartram_word_data(cartram_word_data_tdp),
 		.load_start     (mapper_load_start),
 		.load_addr      (mapper_load_addr),
 		.load_valid     (mapper_load_valid),
 		.load_data      (mapper_load_data),
 		.load_end       (mapper_load_end),
+		.load_wait      (mapper_load_wait),
 		.mapper_ram_size,
 		.mapper_init_busy,
-		.mapper_dma_request,
-		.mapper_dma_fill,
-		.mapper_dma_source,
-		.mapper_dma_dest,
-		.mapper_dma_count,
-		.mapper_dma_value,
-		.mapper_dma_ready,
-		.mapper_dma_done,
-		.mapper_wb_en,
-		.mapper_wb_write,
-		.mapper_wb_addr,
-		.mapper_wb_wdata,
-		.mapper_wb_wstrb,
-		.mapper_wb_accepted,
+		.arm_ram_en,
+		.arm_ram_write,
+		.arm_ram_addr,
+		.arm_ram_wdata,
+		.arm_ram_wstrb,
+		.arm_ram_accepted,
+		.arm_ram_rdata,
+		.ddr_addr       (arm_ddr_addr),
+		.ddr_din        (arm_ddr_din),
+		.ddr_be         (arm_ddr_be),
+		.ddr_len        (arm_ddr_len),
+		.ddr_req        (arm_ddr_req),
+		.ddr_rnw        (arm_ddr_rnw),
+		.ddr_ack        (arm_ddr_ack),
+		.ddr_dout       (arm_ddr_dout),
+		.ddr_rvalid     (arm_ddr_rvalid),
+		.halt_req       (arm_halt_req),
+		.cpu_halted     (arm_halted),
+		.mem_req        (arm_mem_req),
+		.mem_ready      (arm_mem_ready),
+		.mem_abort      (arm_mem_abort),
+		.mem_addr       (arm_mem_addr),
+		.mem_write      (arm_mem_write),
+		.mem_wdata      (arm_mem_wdata),
+		.mem_rdata      (arm_mem_rdata),
+		.mem_size       (arm_mem_size),
+		.mem_wstrb      (arm_mem_wstrb),
+		.mem_fetch      (arm_mem_fetch),
+		.state_req      (arm_state_req),
+		.state_write    (arm_state_write),
+		.state_index    (arm_state_index),
+		.state_wdata    (arm_state_wdata),
+		.state_rdata    (arm_state_rdata),
+		.state_ready    (arm_state_ready),
+		.state_commit   (arm_state_commit),
+		.arm_call_busy,
+		.arm_dma_busy,
 		.fa2_nvram_request,
 		.fa2_nvram_write,
 		.fa2_nvram_addr,
@@ -897,44 +897,136 @@ module Atari7800(
 		.fa2_nvram_rdata,
 		.fa2_nvram_ready,
 		.fa2_nvram_dirty,
-		.arm_call_request,
-		.arm_call_entry,
-		.arm_call_stack,
-		.arm_call_thumb,
-		.arm_call_ready,
-		.arm_call_done,
-		.arm_audio_counter0,
-		.arm_audio_counter1,
-		.arm_audio_counter2,
-		.arm_audio_frequency0,
-		.arm_audio_frequency1,
-		.arm_audio_frequency2,
-		.arm_audio_counter0_return,
-		.arm_audio_counter1_return,
-		.arm_audio_counter2_return,
-		.arm_audio_frequency0_return,
-		.arm_audio_frequency1_return,
-		.arm_audio_frequency2_return,
-		.arm_sample_request,
-		.arm_sample_addr,
-		.arm_sample_ready,
-		.arm_sample_done,
-		.arm_sample_data,
 		.bus_stuff_valid,
 		.bus_stuff_data,
-		.dpc_service_request,
-		.dpc_service_fill,
-		.dpc_service_source,
-		.dpc_service_dest,
-		.dpc_service_count,
-		.dpc_service_value,
-		.dpc_service_ready,
 		.oe             (),
 		.open_bus       (open_bus),
 		.tape_in        (tape_in),
 		.tape_audio     (tape_audio),
 		.fix_sc_cs      (fix_sc_cs)
 	);
+
+endmodule
+
+// Accept one complete, source-caused two-phase stream. During a handoff the old
+// source runs through a matching target edge, then the target supplies the
+// opposite phase. This lets TIA remain externally clocked until the boundary.
+module cpu_phase_controller
+(
+	input  logic clk_sys,
+	input  logic request_tia,
+	input  logic maria_phi1,
+	input  logic maria_phi2,
+	input  logic tia_phi1,
+	input  logic tia_phi2,
+	output logic phi1,
+	output logic phi2,
+	output logic active_tia,
+	output logic edge_source_tia,
+	output logic source_stable,
+	output logic phase_valid
+);
+
+	typedef enum logic [1:0] {
+		PRIME,
+		RUN,
+		WAIT_TARGET_SAME,
+		TAKE_TARGET_OPPOSITE
+	} phase_state_t;
+
+	phase_state_t state = PRIME;
+	logic target_tia = 1'b0;
+	logic last_phase2 = 1'b1;
+	initial begin
+		active_tia = 1'b0;
+		phase_valid = 1'b0;
+	end
+
+	wire active_phi1 = active_tia ? tia_phi1 : maria_phi1;
+	wire active_phi2 = active_tia ? tia_phi2 : maria_phi2;
+	wire requested_phi1 = request_tia ? tia_phi1 : maria_phi1;
+	wire target_phi1 = target_tia ? tia_phi1 : maria_phi1;
+	wire target_phi2 = target_tia ? tia_phi2 : maria_phi2;
+	wire target_same = last_phase2 ? target_phi2 : target_phi1;
+	wire target_matches_edge = (phi1 && target_phi1) ||
+		(phi2 && target_phi2);
+
+	assign source_stable = state == RUN;
+
+	always_comb begin
+		phi1 = 1'b0;
+		phi2 = 1'b0;
+		edge_source_tia = active_tia;
+
+		case (state)
+			PRIME: begin
+				// Establish a known low/phase-1 level before any phase 2.
+				edge_source_tia = request_tia;
+				phi1 = requested_phi1;
+			end
+			RUN: begin
+				phi1 = last_phase2 && active_phi1;
+				phi2 = !last_phase2 && active_phi2;
+			end
+			WAIT_TARGET_SAME: begin
+				phi1 = last_phase2 && active_phi1;
+				phi2 = !last_phase2 && active_phi2;
+			end
+			TAKE_TARGET_OPPOSITE: begin
+				edge_source_tia = target_tia;
+				if (request_tia == target_tia) begin
+					phi1 = last_phase2 && target_phi1;
+					phi2 = !last_phase2 && target_phi2;
+				end
+			end
+			default: begin
+			end
+		endcase
+	end
+
+	always_ff @(posedge clk_sys) begin
+		if (phi1) begin
+			last_phase2 <= 1'b0;
+			phase_valid <= 1'b1;
+		end else if (phi2) begin
+			last_phase2 <= 1'b1;
+			phase_valid <= 1'b1;
+		end
+
+		case (state)
+			PRIME: begin
+				if (phi1) begin
+					active_tia <= request_tia;
+					state <= RUN;
+				end
+			end
+			RUN: begin
+				if (request_tia != active_tia) begin
+					target_tia <= request_tia;
+					state <= WAIT_TARGET_SAME;
+				end
+			end
+			WAIT_TARGET_SAME: begin
+				if (request_tia == active_tia)
+					state <= RUN;
+				else if (request_tia != target_tia)
+					target_tia <= request_tia;
+				else if (target_same || target_matches_edge)
+					state <= TAKE_TARGET_OPPOSITE;
+			end
+			TAKE_TARGET_OPPOSITE: begin
+				if (request_tia == active_tia)
+					state <= RUN;
+				else if (request_tia != target_tia) begin
+					target_tia <= request_tia;
+					state <= WAIT_TARGET_SAME;
+				end else if (phi1 || phi2) begin
+					active_tia <= target_tia;
+					state <= RUN;
+				end
+			end
+		endcase
+	end
 
 endmodule
 
@@ -1003,13 +1095,9 @@ module M6502C
 	output logic  is_halted  // This is used to indicate that sally has released the bus
 );
 
-	// MARIA restarts its CPU clock divider when MARIA is enabled, and the
-	// restart can put out a phase 2 with no phase 1 before it - once at reset,
-	// once on the BIOS's first write to the lockout register. T65 only used
-	// pclk1 and never noticed. This core is two-phase and a doubled phase 2
-	// steps its T-state without a new address, so the stray pulse is dropped
-	// here rather than in MARIA, where the shape of that restart is load
-	// bearing for everything else.
+	// The source controller removes MARIA restart and source-handoff hazards.
+	// Keep this local pairing gate as the CPU pin invariant: an unexpected
+	// duplicate phase must never advance SALLY or any returned system phase.
 	logic in_phase2 = 1'b0;
 	wire  phi1_en = pclk1 & ~in_phase2;
 	wire  phi2_en = pclk0 &  in_phase2;
@@ -1029,7 +1117,7 @@ module M6502C
 
 	// SALLY carries the halt handshake itself: the two phase-2 flip-flops that
 	// release the bus, and the stall into the core's own RDY. The wrapper is
-	// now only a name and a pin adapter.
+	// only a name and a pin adapter.
 	sally cpu (
 		.clk_sys  (clk_sys),
 		.phi1_en  (phi1_en),

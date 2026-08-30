@@ -55,14 +55,14 @@ module composite_out #(
 	parameter [7:0] LUMA_PEAK = 8'd72,
 	// The luma node's rolloff, as one pole: alpha = 1/2^LUMA_POLE.
 	//
-	// Not a trap. A 3.58 MHz trap is a thing NTSC RECEIVERS have in their luma
-	// channel - one documented part has a 0.62 MHz -3dB width, so Q about 5.8 -
-	// and putting one here was modelling the wrong box. What the console has is
-	// a slow node: the ladder's Thevenin source, 2.26k with R14 7.5K in the
-	// reckoning, driving the node's capacitance. 47 to 100 pF there puts the
-	// corner at 1.5 down to 0.7 MHz and the gain at the subcarrier between
-	// 0.39 and 0.19 - which is the size of attenuation the oracle needs, and it
-	// is one pole because that is what the circuit is.
+	// Not a trap. A 3.58 MHz trap belongs to the RECEIVER's luma channel - one
+	// documented part has a 0.62 MHz -3dB width, so Q about 5.8 - and that is a
+	// different box. What the console has is a slow node: the ladder's Thevenin
+	// source, 2.26k with R14 7.5K in the reckoning, driving the node's
+	// capacitance. 47 to 100 pF there puts the corner at 1.5 down to 0.7 MHz
+	// and the gain at the subcarrier between 0.39 and 0.19, which is the
+	// attenuation the measured output shows. One pole, because that is what the
+	// circuit is.
 	//
 	// A boxcar cannot do this at all: four samples nulls fsc dead and takes
 	// every artifact colour with it, two leaves 0.707 and a full-swing luma
@@ -122,11 +122,12 @@ module composite_out #(
 // project's palettes, which came from measured console output.
 //
 // Each colour's vector - angle AND magnitude - is the measured mean over the
-// luma rows least affected by clipping, per palette. A constant magnitude was
-// tried, on the reasoning that one delay line at one amplitude is what the chip
-// has, and it made the picture worse against both measured references. Whatever
-// the per-code variation is, it is in the real output. Lifted by 1/0.940 for the
-// resonator's loss at the carrier. The angles' spacing is worth recording:
+// luma rows least affected by clipping, per palette. The magnitude is not equal
+// across codes, even though one delay line at one amplitude is what the chip
+// has; whatever that per-code variation is, it is in the real output, and
+// flattening it moves the picture away from both measured references. Lifted by
+// 1/0.940 for the resonator's loss at the carrier. The angles' spacing is worth
+// recording:
 // Fitting a line to the fifteen hue angles gives 25.97, 26.95 and 27.93 degrees
 // per colour code for the cool, warm and hot palettes, against the 25.7 / 26.7 /
 // 27.7 that `rtl/video_mux.sv` documents - within a quarter degree on all three,
@@ -135,17 +136,12 @@ module composite_out #(
 // nominal for fifteen taps closing one cycle would be 24.0 degrees; every
 // measured palette says the real line runs fast.
 
-// The burst is this same chroma, gated during the burst window, out of the same
-// pin through the same divider. So it has the same amplitude - not the NTSC
-// spec figure. The decoder normalises chroma to the burst, so any difference
-// between the two lands straight on saturation.
-// 0.143V, 40 IRE peak to peak. The board drawing shows the burst leaves on the
-// same pin through the same divider as chroma, which argued for making the two
-// equal - but it does not show the burst is emitted at FULL tap amplitude, and
-// two measured sources say it is not. The palettes put chroma at 0.1774V mean,
-// and references/tt.png shows saturated platforms and water that equal amplitude
-// cannot produce. Since the decoder normalises chroma to the burst, making them
-// equal cut every colour by 19 percent. Measurement wins over the inference.
+// The burst is the same chroma, gated during the burst window and leaving on
+// the same pin through the same divider - but not at full tap amplitude. It is
+// 0.143V, 40 IRE peak to peak, where the palettes put chroma at 0.1774V mean.
+// The decoder normalises chroma to the burst, so that difference lands straight
+// on saturation: equal amplitudes cost every colour 19 percent, and the
+// captured platforms and water are more saturated than that allows.
 localparam signed [23:0] BURST_AMP = 24'sd299892;
 
 function automatic signed [23:0] ld(input [3:0] l);
@@ -408,8 +404,7 @@ wire signed [25:0] lsum_n = lsum + {{2{luma[23]}}, luma} - {{2{lold[23]}}, lold}
 wire signed [23:0] lmean = (LUMA_AVG == 4) ? lsum_n[25:2] :
                            (LUMA_AVG == 2) ? lsum_n[24:1] : luma;
 
-// Averaging alone is too dark, and not because the filter is wrong. A set
-// still shows the alternation - its luma bandwidth does not fully reach the
+// Averaging alone is too dark. A set still shows the alternation - its luma bandwidth does not fully reach the
 // subcarrier - and the eye integrates light, not volts. Black against V is
 // perceived at V*2^(-1/gamma), about 0.73 of it, where a plain mean gives
 // 0.50; real hardware measures 0.64 on Tower Toppler's brick, between the

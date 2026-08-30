@@ -808,7 +808,6 @@ module playfield
 	input         reflect, // Control playfield, 1 makes right half mirror image
 	input         cnt,     // center signal, high means right half
 	input         rhb,     // Reset HBlank signal
-	input         hblank,  // HBlank signal
 	input [19:0]  pfc,     // Combined playfield registers
 	output logic  pf       // Playfield graphics
 );
@@ -816,8 +815,8 @@ module playfield
 	logic [4:0] pf_index, pf_next, pf_latch2, pf_latch1;
 	logic pf_1, pf_2, pf_3;
 
-	// Outputs in order PF0 4..7, PF1 7:0, PF2 0:7
-	logic [4:0] index_lut[20];
+	// Outputs in order PF0 4..7, PF1 7:0, PF2 0:7, then the empty position
+	logic [4:0] index_lut[21];
 
 	wire pf_reset = rhb || (cnt && ~reflect);
 	wire pf_reflect = (cnt && reflect);
@@ -825,16 +824,28 @@ module playfield
 	assign index_lut = '{
 		5'd00, 5'd01, 5'd02, 5'd03,                             // PF0
 		5'd11, 5'd10, 5'd09, 5'd08, 5'd07, 5'd06, 5'd05, 5'd04, // PF1 in reverse
-		5'd12, 5'd13, 5'd14, 5'd15, 5'd16, 5'd17, 5'd18, 5'd19  // PF2
+		5'd12, 5'd13, 5'd14, 5'd15, 5'd16, 5'd17, 5'd18, 5'd19, // PF2
+		5'd20                                                   // empty
 	};
 
 	logic [4:0] pf_latch;
 	logic dir;
 
-	assign pf_index = pf_reset ? 1'd0 : (hclk.level_p2 ? pf_latch1 : pf_latch2);
-	assign pf_next = dir ? (|pf_index ? pf_index - 1'd1 : 5'd0) : (pf_index < 19 ? pf_index + 1'd1 : 5'd19);
+	// This is a 20 bit parallel to serial converter (TIA-1A manual figure 5),
+	// so once both halves of the line have been shifted out it has nothing
+	// left to emit and PF reads low until the next [RHB]. That silence is what
+	// keeps an object frozen mid-draw across HBLANK from colliding with the
+	// last playfield pixel on every scanline. The count still holds at the
+	// mirrored centre, where PF2 D7 is emitted twice.
+	localparam PF_EMPTY = 5'd20;
+	wire [20:0] pf_bits = {1'b0, pfc};
 
-	assign pf_1 = pfc[index_lut[pf_index]];
+	assign pf_index = pf_reset ? 1'd0 : (hclk.level_p2 ? pf_latch1 : pf_latch2);
+	assign pf_next = (pf_index == PF_EMPTY) ? PF_EMPTY :
+		dir ? (|pf_index ? pf_index - 1'd1 : PF_EMPTY) :
+		(pf_index < 19 ? pf_index + 1'd1 : (reflect ? 5'd19 : PF_EMPTY));
+
+	assign pf_1 = pf_bits[index_lut[pf_index]];
 
 	f_cell pf_out
 	(
@@ -1939,7 +1950,6 @@ playfield playfield
 	.clkp       (clkp),
 	.hclk       (hclk),
 	.rhb        (rhb),
-	.hblank     (hblank_o),
 	.reflect    (wreg[CTRLPF][0]),
 	.cnt        (cnt),
 	.pfc        ({wreg[PF2], wreg[PF1], wreg[PF0][7:4]}),

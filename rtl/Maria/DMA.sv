@@ -512,12 +512,16 @@ always_ff @(posedge clk_sys) begin
 		end
 	end
 	if (reset) begin
-		DL <= bypass_bios ? 16'h1FFC : 16'd0;
-		DL_PTR <= bypass_bios ? 16'h1FFC : 16'd0;
-		ZONE_PTR <= bypass_bios ? 16'h1F84 : 16'd0;
-		OFFSET <= bypass_bios ? 4'hA : 4'd0;
+		// One snapshot of the DMA engine as the real BIOS leaves it, taken
+		// 101 clk_sys before the cartridge's first fetch - see the note in
+		// video_sync.sv. These belong with the raster seed there and the
+		// zone pointer in control.sv.
+		DL <= bypass_bios ? 16'h2200 : 16'd0;
+		DL_PTR <= bypass_bios ? 16'h2207 : 16'd0;
+		ZONE_PTR <= bypass_bios ? 16'h1FF3 : 16'd0;
+		OFFSET <= bypass_bios ? 4'h2 : 4'd0;
 		CHR_PTR <= 0;
-		PIX_PTR <= 0;
+		PIX_PTR <= bypass_bios ? 16'h8400 : 16'd0;
 		WIDTH <= 0;
 		//dmas <= 48'h400000000000;
 		WM <= 0;
@@ -529,14 +533,13 @@ always_ff @(posedge clk_sys) begin
 		{TLD, DPPHLD, DPPLLD, DPRLLD, DPRHLD, DPHLD, DPLLD, PPLLD, PPHLD, OFFLD,
 		WLATLDF, DLILDF, WLD1F} <= '0;
 		PLA3 <= bypass_bios ? 1'b1 : 1'b0;
-		PLA0 <= bypass_bios ? 1'b1 : 1'b0; // 0x8 after reset init
+		PLA0 <= 1'b0;
 		AB <= 0;
 		PAL <= 0;
 		XEN <= 0;
 		ABENF <= 1;
-		cond2[13:4] <= bypass_bios ? 10'b1001001100 : 10'd0;
-		cond2[1:0] <= bypass_bios ? 2'b11 : 2'd0; // 0x05f7 after reset init
-		//cond2[3:2] <= 2'b00;
+		cond2[13:4] <= bypass_bios ? 10'b0001001100 : 10'd0;
+		cond2[1:0] <= bypass_bios ? 2'b11 : 2'd0; // 0x04c7 at the handoff
 		DLI_flag <= 0;
 		add_sel <= 0;
 		cond[3:0] <= 0;
@@ -549,6 +552,8 @@ always_ff @(posedge clk_sys) begin
 		A11en <= 0;
 		vbe_halt <= 0;
 		hbs_halt <= 0;
+		{start_sr, end_sr, sel5_cnt} <= '0;
+		{old_halt, old_halt2, halt_en, sel5_1, sel5_2, noslow} <= '0;
 		nmi_n <= 1;
 		PAL <= 0;
 		sel_last <= 0;

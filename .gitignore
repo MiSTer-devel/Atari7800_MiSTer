@@ -45,3 +45,6 @@ c5_pin_model_dump.txt
 
 # Host and credentials for the physical MiSTer - local only
 .agents/tools/mister/mister.local.conf
+
+# SingleStepTests vector cache - ~930 MB, hashes tracked in SST_MANIFEST.txt
+.agents/cache/

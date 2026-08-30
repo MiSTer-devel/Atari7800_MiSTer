@@ -60,16 +60,16 @@ module arm_mapper_memory
 	input  logic        ram_accepted,
 	input  logic [31:0] ram_rdata,
 
-	output logic        ddram_clk,
-	output logic [28:0] ddram_addr,
-	output logic  [7:0] ddram_burstcnt,
-	input  logic        ddram_busy,
-	input  logic [63:0] ddram_dout,
-	input  logic        ddram_dout_ready,
-	output logic        ddram_rd,
-	output logic [63:0] ddram_din,
-	output logic  [7:0] ddram_be,
-	output logic        ddram_we
+	// DDR3 channel. Held request, one transaction at a time; see rtl/ddram.sv.
+	output logic [28:0] ddr_addr,
+	output logic [63:0] ddr_din,
+	output logic  [7:0] ddr_be,
+	output logic  [7:0] ddr_len,
+	output logic        ddr_req,
+	output logic        ddr_rnw,
+	input  logic        ddr_ack,
+	input  logic [63:0] ddr_dout,
+	input  logic        ddr_rvalid
 );
 	function automatic logic [63:0] put_byte(
 		input logic [63:0] old_word,
@@ -385,24 +385,24 @@ module arm_mapper_memory
 	logic [63:0] dma_read_data;
 	logic [28:0] sample_ddr_addr;
 
-	assign ddram_clk = clk_arm;
-	assign ddram_we = ddr_state == DDR_LOAD_WRITE;
-	assign ddram_rd = ddr_state == DDR_ROM_COMMAND ||
-		ddr_state == DDR_DMA_COMMAND || ddr_state == DDR_SAMPLE_COMMAND;
-	assign ddram_addr = ddr_state == DDR_LOAD_WRITE ? load_ddr_addr :
+	assign ddr_req = ddr_state == DDR_LOAD_WRITE ||
+		ddr_state == DDR_ROM_COMMAND || ddr_state == DDR_DMA_COMMAND ||
+		ddr_state == DDR_SAMPLE_COMMAND;
+	assign ddr_rnw = ddr_state != DDR_LOAD_WRITE;
+	assign ddr_addr = ddr_state == DDR_LOAD_WRITE ? load_ddr_addr :
 		(ddr_state == DDR_DMA_COMMAND ? dma_ddr_addr :
 		(ddr_state == DDR_SAMPLE_COMMAND ? sample_ddr_addr : fill_ddr_addr));
-	assign ddram_burstcnt = ddr_state == DDR_ROM_COMMAND ? 8'd4 : 8'd1;
-	assign ddram_din = load_ddr_data;
-	assign ddram_be = load_ddr_be;
+	// The ROM line is 256 bits: one burst of four, not four transactions.
+	assign ddr_len = ddr_state == DDR_ROM_COMMAND ? 8'd4 : 8'd1;
+	assign ddr_din = load_ddr_data;
+	assign ddr_be = load_ddr_be;
 
 	typedef enum logic [2:0] {
 		BUS_IDLE,
 		BUS_CACHE_CHECK,
 		BUS_CACHE_WAIT,
 		BUS_RAM_ISSUE,
-		BUS_RAM_WAIT,
-		BUS_RESPONSE
+		BUS_RAM_WAIT
 	} bus_state_t;
 	bus_state_t bus_state;
 	logic [31:0] req_addr;
@@ -411,7 +411,6 @@ module arm_mapper_memory
 	logic  [1:0] req_size;
 	logic  [3:0] req_wstrb;
 	logic        req_fetch;
-	logic        response_return;
 
 	logic [20:0] ic_tag [0:63];
 	logic [20:0] dc_tag [0:63];
@@ -483,13 +482,99 @@ module arm_mapper_memory
 	logic [21:0] sample_cache_tag;
 	logic [63:0] sample_cache_data;
 
-	assign ram_en = dma_ram_en || bus_state == BUS_RAM_ISSUE;
-	assign ram_write = dma_ram_en || req_write;
-	assign ram_addr = dma_ram_en ? dma_active_dest[16:2] : req_addr[16:2];
-	assign ram_wdata = dma_ram_en ? {4{dma_write_byte}} : req_wdata;
+	// A completed fill is one cycle wide, so hold the answer for as long as
+	// the requester takes it - mem_ce can stretch that.
+	logic        fill_answer_held;
+
+	// The real part overlaps its address and data phases, so a source that
+	// already holds the answer returns it with no wait state. Nothing here is
+	// registered on the way out: the address phase below decodes the request in
+	// the cycle it appears, and each state that can answer drives mem_ready
+	// directly. Registering the answer would add a response cycle to every
+	// access - three clk_arm even for a cache hit, four for cartridge RAM. The
+	// state machine is left only to sequence the sources that
+	// genuinely take more than a cycle - a cache tag lookup, a DDR fill, and a
+	// RAM read.
+	//
+	//   held-line fetch, RAM write, MMIO, abort   1 clk_arm
+	//   cache hit across a line, RAM read         2 clk_arm
+	//   cache miss                                DDR fill
+	//
+	// Sixteen sequential Thumb instructions live in one 256-bit line, but the
+	// core asks for each halfword separately, so without the held line every
+	// instruction paid a round trip for a halfword the previous fetch had
+	// already read. Holding it is what the LPC2103's MAM does for the real
+	// cartridge. Only instruction fetches take that path: ROM is immutable to
+	// the ARM (a write below rom_size aborts), so the held line cannot go stale
+	// while it is valid.
+	logic [255:0] fetch_line_data;
+	logic  [26:0] fetch_line_tag;
+	logic         fetch_line_valid;
+
+	// Address phase. Valid only while BUS_IDLE is offering to take a request.
+	wire req_phase = mem_req && bus_state == BUS_IDLE && !mapper_reset;
+	wire dec_sentinel = mem_fetch && mem_addr == 32'hF0000000;
+	wire dec_bad = !shadow_ready || mem_size == 2'b11;
+	wire dec_rom = mem_addr < rom_size;
+	wire dec_ram = mem_addr >= 32'h40000000 &&
+		mem_addr < 32'h40000000 + {16'b0, mapper_ram_size};
+	wire dec_mmio = mem_addr == 32'hE01FC000 ||
+		mem_addr == 32'hE0008004 || mem_addr == 32'hE0008008;
+	wire dec_ok = req_phase && !dec_sentinel && !dec_bad;
+
+	wire hit_sentinel = req_phase && dec_sentinel;
+	wire hit_bad      = req_phase && !dec_sentinel && dec_bad;
+	wire hit_rom_wr   = dec_ok && dec_rom && mem_write;
+	wire hit_line     = dec_ok && dec_rom && !mem_write && mem_fetch &&
+		fetch_line_valid && fetch_line_tag == mem_addr[31:5];
+	wire rom_lookup   = dec_ok && dec_rom && !mem_write && !hit_line;
+	// The RAM port sits one ARM edge in five out to stay clear of the mapper
+	// port, so a request landing on that edge is simply retried by the state
+	// machine rather than answered here.
+	wire ram_target   = dec_ok && !dec_rom && dec_ram;
+	wire ram_phase    = ram_target && !dma_ram_en;
+	wire hit_ram_wr   = ram_phase && mem_write && ram_accepted;
+	wire hit_mmio     = dec_ok && !dec_rom && !dec_ram && dec_mmio;
+	wire hit_none     = dec_ok && !dec_rom && !dec_ram && !dec_mmio;
+
+	wire [31:0] mmio_rdata = mem_addr == 32'hE01FC000 ? mamcr :
+		(mem_addr == 32'hE0008004 ? timer_control : timer_count);
+
+	// Answers driven straight out of a state that already holds the data.
+	wire cache_hit_now = bus_state == BUS_CACHE_CHECK &&
+		((req_fetch && ic_valid[req_addr[10:5]] &&
+			ic_tag[req_addr[10:5]] == req_addr[31:11]) ||
+		(!req_fetch && dc_valid[req_addr[10:5]] &&
+			dc_tag[req_addr[10:5]] == req_addr[31:11]));
+	wire fill_hit_now = bus_state == BUS_CACHE_WAIT &&
+		(fill_done || fill_answer_held);
+	wire ram_wr_now   = bus_state == BUS_RAM_ISSUE && req_write &&
+		ram_accepted && !dma_ram_en;
+	wire ram_rd_now   = bus_state == BUS_RAM_WAIT;
+
+	assign mem_ready = hit_sentinel || hit_bad || hit_rom_wr || hit_line ||
+		hit_ram_wr || hit_mmio || hit_none ||
+		cache_hit_now || fill_hit_now || ram_wr_now || ram_rd_now;
+	assign mem_abort = hit_bad || hit_rom_wr || hit_none;
+	assign mem_rdata =
+		hit_line     ? line_word(fetch_line_data, mem_addr[4:2]) :
+		hit_mmio     ? mmio_rdata :
+		hit_sentinel ? 32'b0 :
+		cache_hit_now ? line_word(selected_cache_data, req_addr[4:2]) :
+		fill_hit_now ? line_word(fill_done_data, fill_word_index) :
+		ram_rd_now   ? ram_rdata : 32'b0;
+	assign return_fetch = hit_sentinel;
+
+	// A RAM access drives the port in the cycle it is decoded; the state
+	// machine only takes over when that first attempt was not accepted.
+	assign ram_en = dma_ram_en || ram_phase || bus_state == BUS_RAM_ISSUE;
+	assign ram_write = dma_ram_en || (ram_phase ? mem_write : req_write);
+	assign ram_addr = dma_ram_en ? dma_active_dest[16:2] :
+		(ram_phase ? mem_addr[16:2] : req_addr[16:2]);
+	assign ram_wdata = dma_ram_en ? {4{dma_write_byte}} :
+		(ram_phase ? mem_wdata : req_wdata);
 	assign ram_wstrb = dma_ram_en ? (4'b0001 << dma_active_dest[1:0]) :
-		req_wstrb;
-	assign return_fetch = mem_ready && response_return;
+		(ram_phase ? mem_wstrb : req_wstrb);
 
 	always @(posedge clk_arm) begin : arm_memory
 		logic [255:0] next_fill_line;
@@ -547,10 +632,10 @@ module arm_mapper_memory
 			req_size <= '0;
 			req_wstrb <= '0;
 			req_fetch <= 1'b0;
-			mem_ready <= 1'b0;
-			mem_abort <= 1'b0;
-			mem_rdata <= '0;
-			response_return <= 1'b0;
+			fetch_line_data <= '0;
+			fetch_line_tag <= '0;
+			fetch_line_valid <= 1'b0;
+			fill_answer_held <= 1'b0;
 			ic_valid <= '0;
 			dc_valid <= '0;
 			fill_index <= '0;
@@ -580,6 +665,7 @@ module arm_mapper_memory
 				epoch_seen <= epoch_sync2;
 				shadow_ready <= 1'b0;
 				ic_valid <= '0;
+				fetch_line_valid <= 1'b0;
 				dc_valid <= '0;
 				sample_cache_valid <= 1'b0;
 				mamcr <= '0;
@@ -589,9 +675,9 @@ module arm_mapper_memory
 
 			if (mapper_reset) begin
 				bus_state <= BUS_IDLE;
-				mem_ready <= 1'b0;
-				response_return <= 1'b0;
+				fill_answer_held <= 1'b0;
 				ic_valid <= '0;
+				fetch_line_valid <= 1'b0;
 				dc_valid <= '0;
 				mamcr <= '0;
 				timer_control <= '0;
@@ -624,14 +710,14 @@ module arm_mapper_memory
 				end
 
 				DDR_LOAD_WRITE: begin
-					if (!ddram_busy) begin
+					if (ddr_ack) begin
 						word_ack_arm <= word_sync2;
 						ddr_state <= DDR_IDLE;
 					end
 				end
 
 				DDR_ROM_COMMAND: begin
-					if (!ddram_busy) begin
+					if (ddr_ack) begin
 						fill_beat <= 2'd0;
 						fill_line <= '0;
 						ddr_state <= DDR_ROM_FILL;
@@ -639,8 +725,8 @@ module arm_mapper_memory
 				end
 
 				DDR_ROM_FILL: begin
-					if (ddram_dout_ready) begin
-						next_fill_line = put_beat(fill_line, fill_beat, ddram_dout);
+					if (ddr_rvalid) begin
+						next_fill_line = put_beat(fill_line, fill_beat, ddr_dout);
 						fill_line <= next_fill_line;
 						if (fill_beat == 2'd3) begin
 							fill_done_data <= next_fill_line;
@@ -653,29 +739,29 @@ module arm_mapper_memory
 				end
 
 				DDR_DMA_COMMAND: begin
-					if (!ddram_busy)
+					if (ddr_ack)
 						ddr_state <= DDR_DMA_READ;
 				end
 
 				DDR_DMA_READ: begin
-					if (ddram_dout_ready) begin
-						dma_read_data <= ddram_dout;
+					if (ddr_rvalid) begin
+						dma_read_data <= ddr_dout;
 						ddr_state <= DDR_IDLE;
 						dma_state <= DMA_RAM_WRITE;
 					end
 				end
 
 				DDR_SAMPLE_COMMAND: begin
-					if (!ddram_busy)
+					if (ddr_ack)
 						ddr_state <= DDR_SAMPLE_READ;
 				end
 
 				default: begin // DDR_SAMPLE_READ
-					if (ddram_dout_ready) begin
-						sample_cache_data <= ddram_dout;
+					if (ddr_rvalid) begin
+						sample_cache_data <= ddr_dout;
 						sample_cache_tag <= sample_active_addr[24:3];
 						sample_cache_valid <= 1'b1;
-						sample_result <= get_byte(ddram_dout,
+						sample_result <= get_byte(ddr_dout,
 							sample_active_addr[2:0]);
 						sample_complete_toggle <= sample_active_token;
 						sample_state <= SAMPLE_IDLE;
@@ -766,74 +852,45 @@ module arm_mapper_memory
 			if (!mapper_reset) begin
 				case (bus_state)
 					BUS_IDLE: begin
-						if (mem_req) begin
+						// The address phase above has already answered anything
+						// that could be answered this cycle. What reaches the
+						// state machine is only what takes longer: a cache tag
+						// lookup, or a RAM access the port did not take.
+						if (req_phase) begin
 							req_addr <= mem_addr;
 							req_write <= mem_write;
 							req_wdata <= mem_wdata;
 							req_size <= mem_size;
 							req_wstrb <= mem_wstrb;
 							req_fetch <= mem_fetch;
-							mem_abort <= 1'b0;
-							response_return <= 1'b0;
 
-							if (mem_fetch && mem_addr == 32'hF0000000) begin
-								mem_rdata <= 32'b0;
-								mem_ready <= 1'b1;
-								response_return <= 1'b1;
-								bus_state <= BUS_RESPONSE;
-							end else if (!shadow_ready || mem_size == 2'b11) begin
-								mem_abort <= 1'b1;
-								mem_ready <= 1'b1;
-								bus_state <= BUS_RESPONSE;
-							end else if (mem_addr < rom_size) begin
-								if (mem_write) begin
-									mem_abort <= 1'b1;
-									mem_ready <= 1'b1;
-									bus_state <= BUS_RESPONSE;
-								end else begin
-									bus_state <= BUS_CACHE_CHECK;
-								end
-							end else if (mem_addr >= 32'h40000000 &&
-								mem_addr < 32'h40000000 +
-									{16'b0, mapper_ram_size}) begin
-								bus_state <= BUS_RAM_ISSUE;
-							end else if (mem_addr == 32'hE01FC000 ||
-								mem_addr == 32'hE0008004 || mem_addr == 32'hE0008008) begin
+							if (hit_mmio && mem_write) begin
 								case (mem_addr)
-									32'hE01FC000: begin
-										mem_rdata <= mamcr;
-										if (mem_write)
-											mamcr <= apply_strobes(mamcr, mem_wdata, mem_wstrb);
-									end
-									32'hE0008004: begin
-										mem_rdata <= timer_control;
-										if (mem_write)
-											timer_control <= apply_strobes(timer_control, mem_wdata, mem_wstrb);
-									end
-									default: begin
-										mem_rdata <= timer_count;
-										if (mem_write)
-											timer_count <= apply_strobes(timer_count, mem_wdata, mem_wstrb);
-									end
+									32'hE01FC000:
+										mamcr <= apply_strobes(mamcr, mem_wdata, mem_wstrb);
+									32'hE0008004:
+										timer_control <= apply_strobes(timer_control, mem_wdata, mem_wstrb);
+									default:
+										timer_count <= apply_strobes(timer_count, mem_wdata, mem_wstrb);
 								endcase
-								mem_ready <= 1'b1;
-								bus_state <= BUS_RESPONSE;
-							end else begin
-								mem_abort <= 1'b1;
-								mem_ready <= 1'b1;
-								bus_state <= BUS_RESPONSE;
 							end
+
+							if (rom_lookup)
+								bus_state <= BUS_CACHE_CHECK;
+							else if (ram_target && !hit_ram_wr)
+								bus_state <= BUS_RAM_ISSUE;
 						end
 					end
 
 					BUS_CACHE_CHECK: begin
-						if ((req_fetch && ic_valid[req_addr[10:5]] &&
-							ic_tag[req_addr[10:5]] == req_addr[31:11]) ||
-							(!req_fetch && dc_valid[req_addr[10:5]] &&
-							dc_tag[req_addr[10:5]] == req_addr[31:11])) begin
-							mem_rdata <= line_word(selected_cache_data, req_addr[4:2]);
-							mem_ready <= 1'b1;
-							bus_state <= BUS_RESPONSE;
+						if (cache_hit_now) begin
+							if (req_fetch) begin
+								fetch_line_data <= selected_cache_data;
+								fetch_line_tag <= req_addr[31:5];
+								fetch_line_valid <= 1'b1;
+							end
+							if (mem_ce)
+								bus_state <= BUS_IDLE;
 						end else if (ddr_state == DDR_IDLE &&
 							dma_state != DMA_COPY_COMMAND &&
 							sample_state != SAMPLE_COMMAND) begin
@@ -849,30 +906,34 @@ module arm_mapper_memory
 
 					BUS_CACHE_WAIT: begin
 						if (fill_done) begin
-							mem_rdata <= line_word(fill_done_data, fill_word_index);
-							mem_ready <= 1'b1;
-							bus_state <= BUS_RESPONSE;
+							fill_answer_held <= 1'b1;
+							if (req_fetch) begin
+								fetch_line_data <= fill_done_data;
+								fetch_line_tag <= req_addr[31:5];
+								fetch_line_valid <= 1'b1;
+							end
+						end
+						if ((fill_done || fill_answer_held) && mem_ce) begin
+							fill_answer_held <= 1'b0;
+							bus_state <= BUS_IDLE;
 						end
 					end
 
 					BUS_RAM_ISSUE: begin
-						if (ram_accepted && !dma_ram_en)
-							bus_state <= BUS_RAM_WAIT;
-					end
-
-					BUS_RAM_WAIT: begin
-						mem_rdata <= ram_rdata;
-						mem_ready <= 1'b1;
-						bus_state <= BUS_RESPONSE;
-					end
-
-					default: begin // BUS_RESPONSE
-						if (mem_ready && mem_ce) begin
-							mem_ready <= 1'b0;
-							mem_abort <= 1'b0;
-							response_return <= 1'b0;
-							bus_state <= BUS_IDLE;
+						if (ram_accepted && !dma_ram_en) begin
+							if (req_write) begin
+								// ram_wr_now answered it as the port took it.
+								if (mem_ce)
+									bus_state <= BUS_IDLE;
+							end else begin
+								bus_state <= BUS_RAM_WAIT;
+							end
 						end
+					end
+
+					default: begin // BUS_RAM_WAIT
+						if (mem_ce)
+							bus_state <= BUS_IDLE;
 					end
 				endcase
 			end

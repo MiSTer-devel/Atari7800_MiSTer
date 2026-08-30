@@ -14,6 +14,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm7tdmi/arm7tdmi_pkg.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm7tdmi/arm7tdmi_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_mapper_memory.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_mapper_controller.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_host.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_mapper_subsystem.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_mapper_tables.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm_mapper_ram_init.sv
@@ -32,11 +33,13 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/banks2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mux.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mixer_plus.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cofi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lightgun.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/paddles.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mouse_st.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/EEPROM_24LC256.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/detect2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/RIOT/M6532.sv

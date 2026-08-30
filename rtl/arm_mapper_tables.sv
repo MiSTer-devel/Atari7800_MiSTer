@@ -51,9 +51,9 @@ module arm_mapper_tables
 
 	// The layout is fixed before the ARM runs, so the fast port works from its
 	// own copy of the family and revision that choose it. Reading them live
-	// put the cartridge-select decode - which starts two clock domains away in
-	// clk_vid - on this port's write enable, where only 3.5 ns of the ARM
-	// period is reachable.
+	// would put the cartridge-select decode - which starts two clock domains
+	// away in clk_vid - on this port's write enable, where only 3.5 ns of the
+	// ARM period is reachable.
 	logic  [1:0] family_sys, family_arm;
 	logic  [2:0] revision_sys, revision_arm;
 	logic [14:0] pointer_base_arm, increment_base_arm, map_base_arm;

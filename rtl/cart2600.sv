@@ -42,34 +42,63 @@ module cart2600
 	output   [7:0]  cartram_wrdata,
 	input    [7:0]  cartram_data,
 	input           clk_arm,
-	input           arm_cartram_en,
-	input           arm_cartram_write,
-	input           arm_cartram_accepted,
-	input   [14:0]  arm_cartram_addr,
-	input   [31:0]  arm_cartram_wdata,
-	input    [3:0]  arm_cartram_wstrb,
+	input           reset_arm,
 	input   [31:0]  cartram_word_data,
 	input           load_start,
 	input   [24:0]  load_addr,
 	input           load_valid,
 	input    [7:0]  load_data,
 	input           load_end,
+	output          load_wait,
 	input   [15:0]  mapper_ram_size,
 	output          mapper_init_busy,
-	output          mapper_dma_request,
-	output          mapper_dma_fill,
-	output  [24:0]  mapper_dma_source,
-	output  [16:0]  mapper_dma_dest,
-	output  [17:0]  mapper_dma_count,
-	output   [7:0]  mapper_dma_value,
-	input           mapper_dma_ready,
-	input           mapper_dma_done,
-	output          mapper_wb_en,
-	output          mapper_wb_write,
-	output  [14:0]  mapper_wb_addr,
-	output  [31:0]  mapper_wb_wdata,
-	output   [3:0]  mapper_wb_wstrb,
-	input           mapper_wb_accepted,
+
+	// Merged ARM side of the shared cartridge RAM. cart_ram_tdp stays in the
+	// core because the 7800 path shares it, but the table writeback and the
+	// ARM contend for it here, where both of them live.
+	output          arm_ram_en,
+	output          arm_ram_write,
+	output  [14:0]  arm_ram_addr,
+	output  [31:0]  arm_ram_wdata,
+	output   [3:0]  arm_ram_wstrb,
+	input           arm_ram_accepted,
+	input   [31:0]  arm_ram_rdata,
+
+	// DDR3 channel to the core's bridge.
+	output  [28:0]  ddr_addr,
+	output  [63:0]  ddr_din,
+	output   [7:0]  ddr_be,
+	output   [7:0]  ddr_len,
+	output          ddr_req,
+	output          ddr_rnw,
+	input           ddr_ack,
+	input   [63:0]  ddr_dout,
+	input           ddr_rvalid,
+
+	// ARM7TDMI bus, from arm_host in the core.
+	output          halt_req,
+	input           cpu_halted,
+	input           mem_req,
+	output          mem_ready,
+	output          mem_abort,
+	input   [31:0]  mem_addr,
+	input           mem_write,
+	input   [31:0]  mem_wdata,
+	output  [31:0]  mem_rdata,
+	input    [1:0]  mem_size,
+	input    [3:0]  mem_wstrb,
+	input           mem_fetch,
+	output          state_req,
+	output          state_write,
+	output   [5:0]  state_index,
+	output  [31:0]  state_wdata,
+	input   [31:0]  state_rdata,
+	input           state_ready,
+	output          state_commit,
+
+	// The 6507 is held while either of these runs; the core gates its clock.
+	output          arm_call_busy,
+	output          arm_dma_busy,
 	output          fa2_nvram_request,
 	output          fa2_nvram_write,
 	output   [7:0]  fa2_nvram_addr,
@@ -78,39 +107,8 @@ module cart2600
 	input           fa2_nvram_ready,
 	output          fa2_nvram_dirty,
 
-	output          arm_call_request,
-	output  [31:0]  arm_call_entry,
-	output  [31:0]  arm_call_stack,
-	output          arm_call_thumb,
-	input           arm_call_ready,
-	input           arm_call_done,
-	output  [31:0]  arm_audio_counter0,
-	output  [31:0]  arm_audio_counter1,
-	output  [31:0]  arm_audio_counter2,
-	output  [31:0]  arm_audio_frequency0,
-	output  [31:0]  arm_audio_frequency1,
-	output  [31:0]  arm_audio_frequency2,
-	input   [31:0]  arm_audio_counter0_return,
-	input   [31:0]  arm_audio_counter1_return,
-	input   [31:0]  arm_audio_counter2_return,
-	input   [31:0]  arm_audio_frequency0_return,
-	input   [31:0]  arm_audio_frequency1_return,
-	input   [31:0]  arm_audio_frequency2_return,
-	output          arm_sample_request,
-	output  [24:0]  arm_sample_addr,
-	input           arm_sample_ready,
-	input           arm_sample_done,
-	input    [7:0]  arm_sample_data,
 	output          bus_stuff_valid,
 	output   [7:0]  bus_stuff_data,
-
-	output          dpc_service_request,
-	output          dpc_service_fill,
-	output  [18:0]  dpc_service_source,
-	output  [14:0]  dpc_service_dest,
-	output   [7:0]  dpc_service_count,
-	output   [7:0]  dpc_service_value,
-	input           dpc_service_ready,
 
 	// Tape Signals
 	output          tape_audio, // Tape audio output
@@ -302,6 +300,205 @@ module cart2600
 	logic [16:0] audio_ram_addr;
 	logic audio_ram_grant;
 	logic load_end_d = 1'b0;
+
+	// The ARM service the DPC+, BUS and CDF front ends call into. It sits here
+	// with them, so only the CPU bus, the DDR3 channel and the shared RAM port
+	// cross back out to the core.
+	logic        arm_shadow_ready;
+	logic        arm_cartram_en, arm_cartram_write, arm_cartram_accepted;
+	logic [14:0] arm_cartram_addr;
+	logic [31:0] arm_cartram_wdata;
+	logic  [3:0] arm_cartram_wstrb;
+	logic        mapper_dma_request, mapper_dma_fill;
+	logic [24:0] mapper_dma_source;
+	logic [16:0] mapper_dma_dest;
+	logic [17:0] mapper_dma_count;
+	logic  [7:0] mapper_dma_value;
+	logic        mapper_dma_ready, mapper_dma_done;
+	logic        mapper_wb_en, mapper_wb_write;
+	logic [14:0] mapper_wb_addr;
+	logic [31:0] mapper_wb_wdata;
+	logic  [3:0] mapper_wb_wstrb;
+	logic        mapper_wb_accepted;
+	logic        dpc_service_request, dpc_service_fill;
+	logic [18:0] dpc_service_source;
+	logic [14:0] dpc_service_dest;
+	logic  [7:0] dpc_service_count, dpc_service_value;
+	logic        dpc_service_ready;
+	logic        arm_dma_request, arm_dma_fill;
+	logic [24:0] arm_dma_source;
+	logic [16:0] arm_dma_dest;
+	logic [17:0] arm_dma_count;
+	logic  [7:0] arm_dma_value;
+	logic        arm_dma_ready, arm_dma_done;
+	logic        arm_call_request, arm_call_thumb;
+	logic [31:0] arm_call_entry, arm_call_stack;
+	logic        arm_call_ready, arm_call_done;
+	logic [31:0] arm_audio_counter0, arm_audio_counter1, arm_audio_counter2;
+	logic [31:0] arm_audio_frequency0, arm_audio_frequency1, arm_audio_frequency2;
+	logic [31:0] arm_audio_counter0_return, arm_audio_counter1_return;
+	logic [31:0] arm_audio_counter2_return;
+	logic [31:0] arm_audio_frequency0_return, arm_audio_frequency1_return;
+	logic [31:0] arm_audio_frequency2_return;
+	logic        arm_sample_request, arm_sample_ready, arm_sample_busy;
+	logic        arm_sample_done;
+	logic [24:0] arm_sample_addr;
+	logic  [7:0] arm_sample_data;
+
+	// The ARM has one DMA engine. The mapper's own initialization owns it while
+	// it runs; afterwards it belongs to the DPC+ fetcher service.
+	assign arm_dma_request = mapper_init_busy ? mapper_dma_request :
+		dpc_service_request;
+	assign arm_dma_fill = mapper_init_busy ? mapper_dma_fill : dpc_service_fill;
+	assign arm_dma_source = mapper_init_busy ? mapper_dma_source :
+		{6'b0, dpc_service_source};
+	assign arm_dma_dest = mapper_init_busy ? mapper_dma_dest :
+		{2'b0, dpc_service_dest};
+	assign arm_dma_count = mapper_init_busy ? mapper_dma_count :
+		{10'b0, dpc_service_count};
+	assign arm_dma_value = mapper_init_busy ? mapper_dma_value : dpc_service_value;
+	assign mapper_dma_ready = mapper_init_busy && arm_dma_ready;
+	assign mapper_dma_done = mapper_init_busy && arm_dma_done;
+	assign dpc_service_ready = !mapper_init_busy && arm_dma_ready;
+
+	// Table writeback and the ARM share one port into the cartridge RAM;
+	// writeback wins while it is asking.
+	assign arm_ram_en = mapper_wb_en || arm_cartram_en;
+	assign arm_ram_write = mapper_wb_en ? mapper_wb_write : arm_cartram_write;
+	assign arm_ram_addr = mapper_wb_en ? mapper_wb_addr : arm_cartram_addr;
+	assign arm_ram_wdata = mapper_wb_en ? mapper_wb_wdata : arm_cartram_wdata;
+	assign arm_ram_wstrb = mapper_wb_en ? mapper_wb_wstrb : arm_cartram_wstrb;
+	assign arm_cartram_accepted = arm_cartram_en && !mapper_wb_en &&
+		arm_ram_accepted;
+	assign mapper_wb_accepted = mapper_wb_en && arm_ram_accepted;
+
+`ifndef NO_ARM_MAPPER
+	arm_mapper_subsystem arm_mappers (
+		.clk_sys         (clk),
+		.reset_sys       (reset_arm),
+		.mapper_reset    (reset),
+		.load_start,
+		.load_addr,
+		.load_valid,
+		.load_end,
+		.load_size       (rom_size),
+		.load_data,
+		.load_wait,
+		.clk_arm,
+		.reset_arm,
+		.shadow_ready    (arm_shadow_ready),
+		.mapper_ram_size,
+		.dma_request     (arm_dma_request),
+		.dma_fill        (arm_dma_fill),
+		.dma_source      (arm_dma_source),
+		.dma_dest        (arm_dma_dest),
+		.dma_count       (arm_dma_count),
+		.dma_value       (arm_dma_value),
+		.dma_ready       (arm_dma_ready),
+		.dma_busy        (arm_dma_busy),
+		.dma_done        (arm_dma_done),
+		.sample_request  (arm_sample_request),
+		.sample_addr     (arm_sample_addr),
+		.sample_ready    (arm_sample_ready),
+		.sample_busy     (arm_sample_busy),
+		.sample_done     (arm_sample_done),
+		.sample_data     (arm_sample_data),
+		.call_request    (arm_call_request),
+		.call_entry      (arm_call_entry),
+		.call_stack      (arm_call_stack),
+		.call_thumb      (arm_call_thumb),
+		.audio_counter0  (arm_audio_counter0),
+		.audio_counter1  (arm_audio_counter1),
+		.audio_counter2  (arm_audio_counter2),
+		.audio_frequency0(arm_audio_frequency0),
+		.audio_frequency1(arm_audio_frequency1),
+		.audio_frequency2(arm_audio_frequency2),
+		.call_ready      (arm_call_ready),
+		.call_busy       (arm_call_busy),
+		.call_done       (arm_call_done),
+		.audio_counter0_return  (arm_audio_counter0_return),
+		.audio_counter1_return  (arm_audio_counter1_return),
+		.audio_counter2_return  (arm_audio_counter2_return),
+		.audio_frequency0_return(arm_audio_frequency0_return),
+		.audio_frequency1_return(arm_audio_frequency1_return),
+		.audio_frequency2_return(arm_audio_frequency2_return),
+		.cpu_halted,
+		.ram_en          (arm_cartram_en),
+		.ram_write       (arm_cartram_write),
+		.ram_addr        (arm_cartram_addr),
+		.ram_wdata       (arm_cartram_wdata),
+		.ram_wstrb       (arm_cartram_wstrb),
+		.ram_accepted    (arm_cartram_accepted),
+		.ram_rdata       (arm_ram_rdata),
+		.ddr_addr,
+		.ddr_din,
+		.ddr_be,
+		.ddr_len,
+		.ddr_req,
+		.ddr_rnw,
+		.ddr_ack,
+		.ddr_dout,
+		.ddr_rvalid,
+		.halt_req,
+		.mem_req,
+		.mem_ready,
+		.mem_abort,
+		.mem_addr,
+		.mem_write,
+		.mem_wdata,
+		.mem_rdata,
+		.mem_size,
+		.mem_wstrb,
+		.mem_fetch,
+		.state_req,
+		.state_write,
+		.state_index,
+		.state_wdata,
+		.state_rdata,
+		.state_ready,
+		.state_commit
+	);
+`else
+	// Simulation builds that leave the ARM sources out.
+	assign load_wait = 1'b0;
+	assign arm_shadow_ready = 1'b0;
+	assign arm_dma_ready = 1'b0;
+	assign arm_dma_busy = 1'b0;
+	assign arm_dma_done = 1'b0;
+	assign arm_sample_ready = 1'b0;
+	assign arm_sample_busy = 1'b0;
+	assign arm_sample_done = 1'b0;
+	assign arm_sample_data = 8'b0;
+	assign arm_call_ready = 1'b0;
+	assign arm_call_busy = 1'b0;
+	assign arm_call_done = 1'b0;
+	assign arm_audio_counter0_return = 32'b0;
+	assign arm_audio_counter1_return = 32'b0;
+	assign arm_audio_counter2_return = 32'b0;
+	assign arm_audio_frequency0_return = 32'b0;
+	assign arm_audio_frequency1_return = 32'b0;
+	assign arm_audio_frequency2_return = 32'b0;
+	assign arm_cartram_en = 1'b0;
+	assign arm_cartram_write = 1'b0;
+	assign arm_cartram_addr = 15'b0;
+	assign arm_cartram_wdata = 32'b0;
+	assign arm_cartram_wstrb = 4'b0;
+	assign ddr_addr = 29'b0;
+	assign ddr_din = 64'b0;
+	assign ddr_be = 8'b0;
+	assign ddr_len = 8'd1;
+	assign ddr_req = 1'b0;
+	assign ddr_rnw = 1'b1;
+	assign halt_req = 1'b0;
+	assign mem_ready = 1'b0;
+	assign mem_abort = 1'b0;
+	assign mem_rdata = 32'b0;
+	assign state_req = 1'b0;
+	assign state_write = 1'b0;
+	assign state_index = 6'b0;
+	assign state_wdata = 32'b0;
+	assign state_commit = 1'b0;
+`endif
 
 	always_ff @(posedge clk) begin
 		if (load_start)
@@ -625,11 +822,10 @@ module cart2600
 	assign cartram_addr = init_ram_en ? {1'b0, init_ram_addr} :
 		(sel_ram_sel ? sel_ram_a : {1'b0, audio_ram_addr});
 	// One access, one write. The strobe is a level that stands for most of the
-	// 6507 cycle, so a mapper that steps its RAM address at phi2 - DPC+'s
-	// DFxWRITE and DFxPUSH move their counter there, CDF's DSWRITE its pointer
-	// - had the same byte written a second time at the next address. Chaotic
-	// Grill writes the display image 4,500 times a screen and every one left a
-	// stray byte behind it.
+	// 6507 cycle, so without this a mapper that steps its RAM address at phi2 -
+	// DPC+'s DFxWRITE and DFxPUSH move their counter there, CDF's DSWRITE its
+	// pointer - writes the same byte a second time at the next address, leaving
+	// a stray byte behind every store.
 	assign cartram_wr = !init_ram_en && sel_ram_sel && ~sel_ram_rw &&
 		~phi1 && ~address_change && ~access_taken;
 	assign cartram_rd = init_ram_en || audio_ram_grant ||

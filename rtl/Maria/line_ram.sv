@@ -46,9 +46,9 @@ module line_ram(
 	input  logic               cram_write
 );
 
-// Two things used to keep the whole line RAM in flops: MARIA writes up to four
-// cells at once, and the real part flash-clears the buffer at the start of a
-// line. Neither needs fabric for the cell data itself.
+// Two things argue for keeping the whole line RAM in flops: MARIA writes up to
+// four cells at once, and the real part flash-clears the buffer at the start of
+// a line. Neither needs fabric for the cell data itself.
 //
 //   Four at once - consecutive cell addresses always differ in their low two
 //   bits, so banking on those hands each bank exactly one of the four writes
@@ -301,8 +301,7 @@ end
 
 
 // hpos advances on a byte, or is loaded by the display list. A byte latched in
-// the same cycle wins and advances from the old position, as it did when both
-// assignments sat in one block.
+// the same cycle wins and advances from the old position.
 always_ff @(posedge clk_sys) begin
 	if (RESET)
 		hpos <= 8'd0;
@@ -324,8 +323,8 @@ always_comb begin
 	end
 end
 
-// A byte latched on the swap cycle belongs to the buffer being cleared: the
-// flop version wrote lram_in after clearing it, and the later assignment won.
+// A byte latched on the swap cycle belongs to the buffer being cleared, so it
+// goes to wr_buf_next and sets its occupancy bit after the clear.
 always_ff @(posedge clk_sys) begin
 	wr_buf <= wr_buf_next;
 	for (int b = 0; b < 4; b++) begin

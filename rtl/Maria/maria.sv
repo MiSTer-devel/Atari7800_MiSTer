@@ -124,7 +124,7 @@ module maria(
 	logic             pclk_toggle = 1'b0;
 	logic             sel_slow_clock;
 	logic             NMI_ung_n;
-	logic             slow_clk_latch;
+	logic             slow_clk_latch = 1'b0;
 	logic             ready_int;
 	logic             cram_sel;
 	logic             ABEN;
@@ -156,10 +156,7 @@ module maria(
 
 		if (reset) begin
 			old_ready <= 1'b1;
-			pal_counter <= 8'd0;
 			ready_int <= 1'b1;
-			slow_clk_latch <= 1'b0;
-			tia_enable_count <= 4'd2;
 		end
 
 		if (ce) begin
@@ -167,11 +164,10 @@ module maria(
 
 			// If maria enabled rises, the CPU clock is held in a state
 			// of reset for 5 master oscillator cycles.
-			if (~old_men && maria_en) begin
+			if (~old_men && maria_en)
 				men_count <= 4'd5;
-			end
 
-			if (!reset && mclk1 && |tia_enable_count)
+			if (mclk1 && |tia_enable_count)
 				tia_enable_count <= tia_enable_count - 1'd1;
 
 			if (|men_count)
@@ -184,12 +180,15 @@ module maria(
 					pclk <= 1;
 			end
 
-			if (!reset && PAL && pal_counter == 8'd109) begin
+			if (pclk0)
+				slow_clk_latch <= sel_slow_clock;
+
+			if (PAL && pal_counter == 8'd109) begin
 				pal_counter <= 8'd0;
 				mclk0 <= 1'b0;
 				mclk1 <= 1'b0;
 			end else begin
-				pal_counter <= (!reset && PAL) ? pal_counter + 8'd1 : 8'd0;
+				pal_counter <= PAL ? pal_counter + 8'd1 : 8'd0;
 				mclk0 <= clk_toggle;
 				mclk1 <= ~clk_toggle;
 				clk_toggle <= ~clk_toggle;
@@ -201,9 +200,6 @@ module maria(
 				else
 					if (lrc)
 						ready_int <= 1'b1;
-
-				if (pclk0)
-					slow_clk_latch <= sel_slow_clock;
 
 				if (~pclk) begin
 					old_ready <= ready_int;
@@ -223,6 +219,7 @@ module maria(
 					clock_div <= (~pclk_toggle ? sel_slow_clock : slow_clk_latch) ? 3'd2 : 3'd1;
 				end
 			end
+
 			if (|men_count) begin
 				pclk_toggle <= 1'b0;
 				clock_div <= sel_slow_clock ? 3'd2 : 3'd1;
@@ -285,6 +282,13 @@ module maria(
 
 	dma dma_inst (
 		.clk_sys         (clk_sys),
+		// Not `|| ~maria_en`. The BIOS clears the register block with
+		// STA $01,X, which turns MEN off and on again mid-frame. Restarting
+		// the engine from its zero state there drops ABENF at a raster
+		// position it never sequenced up to, so it takes the address bus
+		// with the CPU still running - the CPU then fetched from $0000 and
+		// the BIOS bailed to its 2600 fallback. Let it keep running instead;
+		// `drive_AB` is already gated by MEN.
 		.reset           (reset),
 		.mclk0           (mclk0),
 		.mclk1           (mclk1),

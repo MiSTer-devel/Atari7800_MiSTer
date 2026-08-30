@@ -101,9 +101,9 @@ module mapper_dpcplus
 	end
 
 	// Each stream's window test on its own, so the fetched ROM byte only picks
-	// one afterwards. Reading top/counter/bottom through read_index instead put
-	// a mux, a subtract and a compare between the cartridge ROM and the 6507
-	// data bus - about 3.5 ns of the 20 ns that path could not afford.
+	// one afterwards. Reading top/counter/bottom through read_index would put a
+	// mux, a subtract and a compare between the cartridge ROM and the 6507 data
+	// bus - about 3.5 ns out of the 20 that path has.
 	always_comb
 		for (int i = 0; i < 8; i++)
 			window_set[i] = (top[i] - counter[i][7:0]) >

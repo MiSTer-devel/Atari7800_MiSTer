@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Jamie Blanks
 
-// One ARM service shared by the DPC+, BUS, and CDF mapper front ends.
+// The Atari 2600 profile of the shared ARM: the call controller and the
+// mapper's own memory system, serving the DPC+, BUS and CDF front ends.
+// The CPU itself lives in arm_host; only its bus crosses in.
 module arm_mapper_subsystem
 (
 	input  logic        clk_sys,
@@ -54,7 +56,7 @@ module arm_mapper_subsystem
 	output logic [31:0] audio_frequency0_return,
 	output logic [31:0] audio_frequency1_return,
 	output logic [31:0] audio_frequency2_return,
-	output logic        arm_halted,
+	input  logic        cpu_halted,
 
 	output logic        ram_en,
 	output logic        ram_write,
@@ -64,16 +66,35 @@ module arm_mapper_subsystem
 	input  logic        ram_accepted,
 	input  logic [31:0] ram_rdata,
 
-	output logic        ddram_clk,
-	output logic [28:0] ddram_addr,
-	output logic  [7:0] ddram_burstcnt,
-	input  logic        ddram_busy,
-	input  logic [63:0] ddram_dout,
-	input  logic        ddram_dout_ready,
-	output logic        ddram_rd,
-	output logic [63:0] ddram_din,
-	output logic  [7:0] ddram_be,
-	output logic        ddram_we
+	output logic [28:0] ddr_addr,
+	output logic [63:0] ddr_din,
+	output logic  [7:0] ddr_be,
+	output logic  [7:0] ddr_len,
+	output logic        ddr_req,
+	output logic        ddr_rnw,
+	input  logic        ddr_ack,
+	input  logic [63:0] ddr_dout,
+	input  logic        ddr_rvalid,
+
+	// ARM7TDMI bus, from arm_host.
+	output logic        halt_req,
+	input  logic        mem_req,
+	output logic        mem_ready,
+	output logic        mem_abort,
+	input  logic [31:0] mem_addr,
+	input  logic        mem_write,
+	input  logic [31:0] mem_wdata,
+	output logic [31:0] mem_rdata,
+	input  logic  [1:0] mem_size,
+	input  logic  [3:0] mem_wstrb,
+	input  logic        mem_fetch,
+	output logic        state_req,
+	output logic        state_write,
+	output logic  [5:0] state_index,
+	output logic [31:0] state_wdata,
+	input  logic [31:0] state_rdata,
+	input  logic        state_ready,
+	output logic        state_commit
 );
 	logic mapper_reset_sync1;
 	logic mapper_reset_arm;
@@ -88,60 +109,7 @@ module arm_mapper_subsystem
 		end
 	end
 
-	logic halt_req;
-	logic mem_req;
-	logic mem_ready;
-	logic mem_abort;
-	logic [31:0] mem_addr;
-	logic mem_write;
-	logic [31:0] mem_wdata;
-	logic [31:0] mem_rdata;
-	logic  [1:0] mem_size;
-	logic  [3:0] mem_wstrb;
-	logic mem_seq;
-	logic mem_fetch;
-	logic mem_privileged;
-	logic mem_lock;
 	logic return_fetch;
-	logic retire;
-	logic state_req;
-	logic state_write;
-	logic  [5:0] state_index;
-	logic [31:0] state_wdata;
-	logic [31:0] state_rdata;
-	logic state_ready;
-	logic state_commit;
-
-	arm7tdmi_core arm_cpu (
-		.clk            (clk_arm),
-		.reset          (reset_arm),
-		.ce             (1'b1),
-		.irq_n          (1'b1),
-		.fiq_n          (1'b1),
-		.halt_req,
-		.halted         (arm_halted),
-		.mem_req,
-		.mem_ready,
-		.mem_abort,
-		.mem_addr,
-		.mem_write,
-		.mem_wdata,
-		.mem_rdata,
-		.mem_size,
-		.mem_wstrb,
-		.mem_seq,
-		.mem_fetch,
-		.mem_privileged,
-		.mem_lock,
-		.retire,
-		.state_req,
-		.state_write,
-		.state_index,
-		.state_wdata,
-		.state_rdata,
-		.state_ready,
-		.state_commit
-	);
 
 	arm_mapper_controller call_controller (
 		.clk_sys,
@@ -171,7 +139,7 @@ module arm_mapper_subsystem
 		.mapper_reset_arm,
 		.shadow_ready,
 		.return_fetch    (return_fetch),
-		.cpu_halted      (arm_halted),
+		.cpu_halted,
 		.halt_req,
 		.state_req,
 		.state_write,
@@ -231,15 +199,14 @@ module arm_mapper_subsystem
 		.ram_wstrb,
 		.ram_accepted,
 		.ram_rdata,
-		.ddram_clk,
-		.ddram_addr,
-		.ddram_burstcnt,
-		.ddram_busy,
-		.ddram_dout,
-		.ddram_dout_ready,
-		.ddram_rd,
-		.ddram_din,
-		.ddram_be,
-		.ddram_we
+		.ddr_addr,
+		.ddr_din,
+		.ddr_be,
+		.ddr_len,
+		.ddr_req,
+		.ddr_rnw,
+		.ddr_ack,
+		.ddr_dout,
+		.ddr_rvalid
 	);
 endmodule

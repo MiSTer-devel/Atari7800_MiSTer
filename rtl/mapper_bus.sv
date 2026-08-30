@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Jamie Blanks
 
-// BUS1/2/3 cartridge front end. BUS0 remains disabled until an exact image can
-// settle its broken legacy increment register behavior.
+// BUS1/2/3 cartridge front end. BUS0 stays disabled: its legacy increment
+// register behaviour has no image to check it against.
 module mapper_bus
 (
 	input  logic        clk,

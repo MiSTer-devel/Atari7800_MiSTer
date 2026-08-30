@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //
 // Direct SystemVerilog descendant of MiSTer-devel/GBA_MiSTer's gba_cpu.vhd,
-// commit 93790a023395bbd90e5eaf4dfb2cb5910afd55f5. The original is retained at
-// references/CPU/ARM7TDMI/gba_mister/source/gba_cpu.vhd. This file preserves
-// its ARM/Thumb register, ALU, shifter, multiplier, transfer, bank, and
-// exception semantics while replacing the GBA bus and timing machinery.
+// commit 93790a023395bbd90e5eaf4dfb2cb5910afd55f5. This file preserves its
+// ARM/Thumb register, ALU, shifter, multiplier, transfer, bank, and exception
+// semantics while replacing the GBA bus and timing machinery.
 //
 // Copyright (C) 2016-2026 Robert Peip and GBA_MiSTer contributors
 // Copyright (C) 2026 Jamie Blanks
@@ -358,6 +357,7 @@ module arm7tdmi_core
 	logic [31:0] dp_mem_updated_base;
 	logic [31:0] dp_block_address;
 	logic [31:0] dp_block_updated_base;
+	logic        exec_simple_control;
 	logic  [2:0] dp_multiply_wait;
 	logic [31:0] exec_effective_result;
 	logic [31:0] exec_effective_post_cpsr;
@@ -507,6 +507,7 @@ module arm7tdmi_core
 	logic [31:0] reg_thumb_r3;
 	logic [31:0] reg_thumb_r8;
 	logic [31:0] reg_thumb_hs;
+	logic        arm_register_shift;
 
 	assign dec_instruction = prefetch_instruction;
 	assign dec_tinsn = prefetch_pc[1] ? prefetch_instruction[31:16] :
@@ -523,10 +524,23 @@ module arm7tdmi_core
 	assign idx_thumb_hd = {dec_tinsn[7], dec_tinsn[2:0]};
 	assign idx_thumb_hs = {dec_tinsn[6], dec_tinsn[5:3]};
 
-	assign raw_arm_rn   = read_decode_reg(idx_arm_rn);
+	// A data-processing instruction whose shift amount comes from a register
+	// spends an extra cycle before it reads its operands, so R15 reads one
+	// instruction further on than usual. Bit 4 set with bit 7 clear picks that
+	// form out - multiply, SWP and the halfword transfers all have bit 7 set -
+	// once BX, MRS and MSR are excluded, which share the shape but sit in the
+	// bits 27:23 = 00010 space with S clear.
+	assign arm_register_shift = (dec_instruction[27:25] == 3'b000) &&
+		dec_instruction[4] && !dec_instruction[7] &&
+		!((dec_instruction[27:23] == 5'b00010) && !dec_instruction[20]);
+
+	assign raw_arm_rn   = (arm_register_shift && (idx_arm_rn == 4'd15)) ?
+		decode_visible_pc_p4 : read_decode_reg(idx_arm_rn);
 	assign raw_arm_rd   = read_decode_reg(idx_arm_rd);
-	assign raw_arm_rs   = read_decode_reg(idx_arm_rs);
-	assign raw_arm_rm   = read_decode_reg(idx_arm_rm);
+	assign raw_arm_rs   = (arm_register_shift && (idx_arm_rs == 4'd15)) ?
+		decode_visible_pc_p4 : read_decode_reg(idx_arm_rs);
+	assign raw_arm_rm   = (arm_register_shift && (idx_arm_rm == 4'd15)) ?
+		decode_visible_pc_p4 : read_decode_reg(idx_arm_rm);
 	assign raw_thumb_r0 = read_decode_reg(idx_thumb_r0);
 	assign raw_thumb_r3 = read_decode_reg(idx_thumb_r3);
 	assign raw_thumb_r6 = read_decode_reg(idx_thumb_r6);
@@ -558,13 +572,23 @@ module arm7tdmi_core
 	assign reg_thumb_r8 = `ARM7_FORWARD(hit_thumb_r8, raw_thumb_r8);
 	assign reg_thumb_hs = `ARM7_FORWARD(hit_thumb_hs, raw_thumb_hs);
 
+	// True when the live register already is the user-mode one, so a user-bank
+	// transfer must use it rather than the saved copy: R0-R7 always, R8-R12
+	// outside FIQ because every other mode shares them, and R13/R14 only in
+	// user and system mode.
+	function automatic logic user_reg_is_live(input logic [3:0] index);
+		user_reg_is_live = (index < 8) ||
+			((index < 13) && (cpsr[4:0] != MODE_FIQ)) ||
+			((index >= 13) && ((cpsr[4:0] == MODE_USER) || (cpsr[4:0] == MODE_SYS)));
+	endfunction
+
 	function automatic logic [31:0] read_user_reg(input logic [3:0] index);
-		if (index < 8)
-			read_user_reg = regs[index];
-		else if (index < 15)
-			read_user_reg = usr_r8_14[index - 8];
-		else
+		if (index >= 15)
 			read_user_reg = visible_pc;
+		else if (user_reg_is_live(index))
+			read_user_reg = regs[index];
+		else
+			read_user_reg = usr_r8_14[index - 8];
 	endfunction
 
 	function automatic logic [31:0] spsr_for_mode(input logic [4:0] mode);
@@ -607,10 +631,7 @@ module arm7tdmi_core
 		decode_forward_1_valid = 1'b0;
 		decode_forward_1_index = 4'b0;
 		decode_forward_1_value = 32'b0;
-		block_updates_active = !block_user || (block_index < 5'd8) ||
-			((block_index < 5'd13) && (cpsr[4:0] != MODE_FIQ)) ||
-			((block_index >= 5'd13) && ((cpsr[4:0] == MODE_USER) ||
-				(cpsr[4:0] == MODE_SYS)));
+		block_updates_active = !block_user || user_reg_is_live(block_index[3:0]);
 
 		case (state)
 			RUN: begin
@@ -845,6 +866,10 @@ module arm7tdmi_core
 
 	// A block transfer needs its first address and its updated base at once, so
 	// the address gets its own adder rather than a second pass through the ALU.
+	// An EXEC_SIMPLE that rewrites CPSR wholesale - MSR, or the compare group's
+	// P form - flushes the pipeline, so it has to wait for a free bus.
+	assign exec_simple_control = exec_restore_spsr ||
+		(exec_write_psr && !exec_write_spsr && |(exec_psr_mask[7:0]));
 	assign dp_block_updated_base = dp_result;
 	assign dp_block_address = exec_block_addr_add ?
 		(exec_dp_op1 + {25'b0, exec_block_addr_delta}) :
@@ -892,7 +917,13 @@ module arm7tdmi_core
 				MEM_BYTE:
 					load_lane = sign_extend ? {{24{byte_value[7]}}, byte_value} : {24'b0, byte_value};
 				MEM_HALF:
-					load_lane = sign_extend ? {{16{half_value[15]}}, half_value} : {16'b0, half_value};
+					if (address[0])
+						load_lane = sign_extend ?
+							{{24{byte_value[7]}}, byte_value} :
+							ror32({16'b0, half_value}, 5'd8);
+					else
+						load_lane = sign_extend ?
+							{{16{half_value[15]}}, half_value} : {16'b0, half_value};
 				default:
 					load_lane = ror32(word, {address[1:0], 3'b000});
 			endcase
@@ -942,84 +973,145 @@ module arm7tdmi_core
 		end
 	endfunction
 
-	task automatic save_active_bank(input logic [4:0] mode);
+	// A block transfer writes its base register back in the same cycle a
+	// banked save may run. Both are non-blocking, so a plain save would file
+	// the old value and lose the writeback. This view substitutes it.
+	function automatic logic [31:0] reg_with_writeback(input logic [3:0] index);
+		begin
+			if (block_writeback && (block_rn < 15) && (block_rn == index))
+				reg_with_writeback = block_writeback_value;
+			else
+				reg_with_writeback = regs[index];
+		end
+	endfunction
+
+	function automatic logic bank_switch_shared(input logic [4:0] from_mode,
+		input logic [4:0] to_mode);
+		bank_switch_shared = (from_mode == MODE_FIQ) || (to_mode == MODE_FIQ);
+	endfunction
+
+	// R8-R12 are banked only for FIQ; every other mode shares them. A switch
+	// between two non-FIQ modes must leave them alone - the save and the
+	// reload are both non-blocking, so the reload would put the stale copy
+	// back and lose whatever the program had just written. `move_shared` is
+	// set when FIQ is on one side of the switch, and when a whole image is
+	// wanted, which is the halted-state capture and its commit.
+	task automatic save_active_bank_wb(input logic [4:0] mode,
+		input logic move_shared);
 		integer i;
 		begin
 			i = 0;
-			case (mode)
-				MODE_FIQ:
-					for (i = 0; i < 7; i = i + 1)
-						fiq_r8_14[i] <= regs[i + 8];
-				MODE_USER, MODE_SYS:
-					for (i = 0; i < 7; i = i + 1)
-						usr_r8_14[i] <= regs[i + 8];
-				MODE_IRQ: begin
+			if (mode == MODE_FIQ) begin
+				for (i = 0; i < 7; i = i + 1)
+					fiq_r8_14[i] <= reg_with_writeback(4'(i + 8));
+			end else begin
+				if (move_shared)
 					for (i = 0; i < 5; i = i + 1)
-						usr_r8_14[i] <= regs[i + 8];
-					irq_r13_14[0] <= regs[13];
-					irq_r13_14[1] <= regs[14];
-				end
-				MODE_SVC: begin
-					for (i = 0; i < 5; i = i + 1)
-						usr_r8_14[i] <= regs[i + 8];
-					svc_r13_14[0] <= regs[13];
-					svc_r13_14[1] <= regs[14];
-				end
-				MODE_ABT: begin
-					for (i = 0; i < 5; i = i + 1)
-						usr_r8_14[i] <= regs[i + 8];
-					abt_r13_14[0] <= regs[13];
-					abt_r13_14[1] <= regs[14];
-				end
-				MODE_UND: begin
-					for (i = 0; i < 5; i = i + 1)
-						usr_r8_14[i] <= regs[i + 8];
-					und_r13_14[0] <= regs[13];
-					und_r13_14[1] <= regs[14];
-				end
-				default: ;
-			endcase
+						usr_r8_14[i] <= reg_with_writeback(4'(i + 8));
+				case (mode)
+					MODE_USER, MODE_SYS: begin
+						usr_r8_14[5] <= reg_with_writeback(4'(13));
+						usr_r8_14[6] <= reg_with_writeback(4'(14));
+					end
+					MODE_IRQ: begin
+						irq_r13_14[0] <= reg_with_writeback(4'(13));
+						irq_r13_14[1] <= reg_with_writeback(4'(14));
+					end
+					MODE_SVC: begin
+						svc_r13_14[0] <= reg_with_writeback(4'(13));
+						svc_r13_14[1] <= reg_with_writeback(4'(14));
+					end
+					MODE_ABT: begin
+						abt_r13_14[0] <= reg_with_writeback(4'(13));
+						abt_r13_14[1] <= reg_with_writeback(4'(14));
+					end
+					MODE_UND: begin
+						und_r13_14[0] <= reg_with_writeback(4'(13));
+						und_r13_14[1] <= reg_with_writeback(4'(14));
+					end
+					default: ;
+				endcase
+			end
 			i = 0;
 		end
 	endtask
 
-	task automatic load_active_bank(input logic [4:0] mode);
+	task automatic save_active_bank(input logic [4:0] mode,
+		input logic move_shared);
 		integer i;
 		begin
 			i = 0;
-			case (mode)
-				MODE_FIQ:
-					for (i = 0; i < 7; i = i + 1)
-						regs[i + 8] <= fiq_r8_14[i];
-				MODE_USER, MODE_SYS:
-					for (i = 0; i < 7; i = i + 1)
-						regs[i + 8] <= usr_r8_14[i];
-				MODE_IRQ: begin
+			if (mode == MODE_FIQ) begin
+				for (i = 0; i < 7; i = i + 1)
+					fiq_r8_14[i] <= regs[i + 8];
+			end else begin
+				if (move_shared)
+					for (i = 0; i < 5; i = i + 1)
+						usr_r8_14[i] <= regs[i + 8];
+				case (mode)
+					MODE_USER, MODE_SYS: begin
+						usr_r8_14[5] <= regs[13];
+						usr_r8_14[6] <= regs[14];
+					end
+					MODE_IRQ: begin
+						irq_r13_14[0] <= regs[13];
+						irq_r13_14[1] <= regs[14];
+					end
+					MODE_SVC: begin
+						svc_r13_14[0] <= regs[13];
+						svc_r13_14[1] <= regs[14];
+					end
+					MODE_ABT: begin
+						abt_r13_14[0] <= regs[13];
+						abt_r13_14[1] <= regs[14];
+					end
+					MODE_UND: begin
+						und_r13_14[0] <= regs[13];
+						und_r13_14[1] <= regs[14];
+					end
+					default: ;
+				endcase
+			end
+			i = 0;
+		end
+	endtask
+
+	task automatic load_active_bank(input logic [4:0] mode,
+		input logic move_shared);
+		integer i;
+		begin
+			i = 0;
+			if (mode == MODE_FIQ) begin
+				for (i = 0; i < 7; i = i + 1)
+					regs[i + 8] <= fiq_r8_14[i];
+			end else begin
+				if (move_shared)
 					for (i = 0; i < 5; i = i + 1)
 						regs[i + 8] <= usr_r8_14[i];
-					regs[13] <= irq_r13_14[0];
-					regs[14] <= irq_r13_14[1];
-				end
-				MODE_SVC: begin
-					for (i = 0; i < 5; i = i + 1)
-						regs[i + 8] <= usr_r8_14[i];
-					regs[13] <= svc_r13_14[0];
-					regs[14] <= svc_r13_14[1];
-				end
-				MODE_ABT: begin
-					for (i = 0; i < 5; i = i + 1)
-						regs[i + 8] <= usr_r8_14[i];
-					regs[13] <= abt_r13_14[0];
-					regs[14] <= abt_r13_14[1];
-				end
-				MODE_UND: begin
-					for (i = 0; i < 5; i = i + 1)
-						regs[i + 8] <= usr_r8_14[i];
-					regs[13] <= und_r13_14[0];
-					regs[14] <= und_r13_14[1];
-				end
-				default: ;
-			endcase
+				case (mode)
+					MODE_USER, MODE_SYS: begin
+						regs[13] <= usr_r8_14[5];
+						regs[14] <= usr_r8_14[6];
+					end
+					MODE_IRQ: begin
+						regs[13] <= irq_r13_14[0];
+						regs[14] <= irq_r13_14[1];
+					end
+					MODE_SVC: begin
+						regs[13] <= svc_r13_14[0];
+						regs[14] <= svc_r13_14[1];
+					end
+					MODE_ABT: begin
+						regs[13] <= abt_r13_14[0];
+						regs[14] <= abt_r13_14[1];
+					end
+					MODE_UND: begin
+						regs[13] <= und_r13_14[0];
+						regs[14] <= und_r13_14[1];
+					end
+					default: ;
+				endcase
+			end
 			i = 0;
 		end
 	endtask
@@ -1033,8 +1125,7 @@ module arm7tdmi_core
 				regs[index] <= value;
 			end else if (index < 15) begin
 				usr_r8_14[index - 8] <= value;
-				if ((index < 13 && cpsr[4:0] != MODE_FIQ) ||
-					(index >= 13 && ((cpsr[4:0] == MODE_USER) || (cpsr[4:0] == MODE_SYS))))
+				if (user_reg_is_live(index))
 					regs[index] <= value;
 			end
 		end
@@ -1094,8 +1185,17 @@ module arm7tdmi_core
 				next_cpsr[6] = 1'b1;
 			next_cpsr[5] = 1'b0;
 			next_cpsr[4:0] = target_mode;
-			save_active_bank(saved_cpsr[4:0]);
-			load_active_bank(target_mode);
+			// The banked registers of a mode are the same registers whether or
+			// not the exception came from that mode, so entering a mode from
+			// itself must leave them alone. Saving and reloading in the same
+			// cycle would put the stale bank back, because both are
+			// non-blocking.
+			if (saved_cpsr[4:0] != target_mode) begin
+				save_active_bank(saved_cpsr[4:0],
+					bank_switch_shared(saved_cpsr[4:0], target_mode));
+				load_active_bank(target_mode,
+					bank_switch_shared(saved_cpsr[4:0], target_mode));
+			end
 			write_spsr_for_mode(target_mode, saved_cpsr);
 			regs[14] <= link_value;
 			cpsr <= next_cpsr;
@@ -1531,7 +1631,10 @@ module arm7tdmi_core
 				// Post-indexed with a zero offset: the address is Rn itself.
 				dec_op1_sel = SRC_ARM_RN;
 				dec_mem_rd = instruction[15:12];
-				dec_swp_store_value = reg_arm_rm;
+				// A store of R15 writes it two instructions ahead, the same
+				// rule the single and block stores already use.
+				dec_swp_store_value = (instruction[3:0] == 4'd15) ?
+					decode_visible_pc_p4 : reg_arm_rm;
 				dec_swp_byte = instruction[22];
 			end
 			// Halfword and signed transfer
@@ -1671,8 +1774,8 @@ module arm7tdmi_core
 				// A load of Rn wins when Rn is also in the transfer list.
 				dec_block_writeback = instruction[21] &&
 					!(instruction[20] && dec_block_list[rn]);
-				dec_block_user = instruction[22];
 				dec_block_restore_cpsr = instruction[22] && instruction[20] && dec_block_list[15];
+				dec_block_user = instruction[22] && !dec_block_restore_cpsr;
 			end
 			// Branch / branch with link
 			else if (instruction[27:25] == 3'b101) begin
@@ -1949,6 +2052,10 @@ module arm7tdmi_core
 				dec_block_list = {tinsn[8] && tinsn[11],
 					tinsn[8] && !tinsn[11], 6'b0, tinsn[7:0]};
 				register_count = count_registers(dec_block_list);
+				if (register_count == 0) begin
+					dec_block_list = 16'h8000;
+					register_count = 5'd16;
+				end
 				dec_op1_sel = SRC_SP;
 				dec_op2_sel = SRC_IMM;
 				dec_op2_imm = {25'b0, register_count, 2'b00};
@@ -1965,6 +2072,10 @@ module arm7tdmi_core
 				dec_block_writeback = !(tinsn[11] &&
 					|(dec_block_list[7:0] & (8'b1 << tinsn[10:8])));
 				register_count = count_registers(dec_block_list);
+				if (register_count == 0) begin
+					dec_block_list = 16'h8000;
+					register_count = 5'd16;
+				end
 				dec_op1_sel = SRC_T_R8;
 				dec_op2_sel = SRC_IMM;
 				dec_op2_imm = {25'b0, register_count, 2'b00};
@@ -2160,24 +2271,40 @@ module arm7tdmi_core
 							internal_cycle_pending <= 1'b0;
 							case (exec_kind)
 								EXEC_SIMPLE: begin
-									if (!(exec_write_psr && !exec_write_spsr &&
-										|(exec_psr_mask[7:0])) || !mem_req || mem_ready) begin
+									if (!exec_simple_control || !mem_req || mem_ready) begin
 										if (exec_write_reg && (exec_rd < 15))
 											regs[exec_rd] <= exec_effective_result;
 										if (exec_write_psr && exec_write_spsr && mode_has_spsr(cpsr[4:0]))
 											write_spsr_for_mode(cpsr[4:0],
 												(current_spsr & ~exec_psr_mask) |
 												(exec_psr_value & exec_psr_mask));
-										if (exec_write_flags || (exec_write_psr && !exec_write_spsr)) begin
+										if (exec_restore_spsr) begin
+											if (current_spsr[4:0] != cpsr[4:0]) begin
+												save_active_bank(cpsr[4:0],
+													bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+												load_active_bank(current_spsr[4:0],
+													bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+											end
+											cpsr <= current_spsr;
+										end else if (exec_write_flags ||
+											(exec_write_psr && !exec_write_spsr)) begin
 											if (mode_valid(exec_effective_post_cpsr[4:0])) begin
 												if (exec_effective_post_cpsr[4:0] != cpsr[4:0]) begin
-													save_active_bank(cpsr[4:0]);
-													load_active_bank(exec_effective_post_cpsr[4:0]);
+													save_active_bank(cpsr[4:0], bank_switch_shared(
+														cpsr[4:0], exec_effective_post_cpsr[4:0]));
+													load_active_bank(exec_effective_post_cpsr[4:0],
+														bank_switch_shared(cpsr[4:0],
+															exec_effective_post_cpsr[4:0]));
 												end
 												cpsr <= exec_effective_post_cpsr;
 											end
 										end
-										if (exec_write_psr && !exec_write_spsr && |(exec_psr_mask[7:0])) begin
+										if (exec_restore_spsr) begin
+											finish_control(decode_pc + (thumb ? 32'd2 : 32'd4),
+												current_spsr[5], current_spsr[7:6],
+												current_spsr[4:0]);
+										end else if (exec_write_psr && !exec_write_spsr &&
+											|(exec_psr_mask[7:0])) begin
 											finish_control(decode_pc + 32'd4,
 												exec_effective_post_cpsr[5],
 												exec_effective_post_cpsr[7:6],
@@ -2193,8 +2320,12 @@ module arm7tdmi_core
 										if (exec_link)
 											regs[14] <= exec_link_value;
 										if (exec_restore_spsr) begin
-											save_active_bank(cpsr[4:0]);
-											load_active_bank(current_spsr[4:0]);
+											if (current_spsr[4:0] != cpsr[4:0]) begin
+												save_active_bank(cpsr[4:0],
+													bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+												load_active_bank(current_spsr[4:0],
+													bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+											end
 											cpsr <= current_spsr;
 										end else if (exec_write_flags) begin
 											cpsr <= exec_effective_post_cpsr;
@@ -2245,14 +2376,14 @@ module arm7tdmi_core
 										block_writeback <= exec_block_writeback;
 										block_user <= exec_block_user;
 										block_restore_cpsr <= exec_block_restore_cpsr;
-										block_pc_value <= decode_pc + (thumb ? 32'd4 : 32'd12);
+										block_pc_value <= decode_pc + (thumb ? 32'd6 : 32'd12);
 										decode_valid <= 1'b0;
 										state <= BLOCK_ACCESS;
 										mem_req <= 1'b1;
 										mem_addr <= dp_block_address;
 										mem_write <= !exec_block_load;
 										if (exec_block_first_index == 15)
-											mem_wdata <= decode_pc + (thumb ? 32'd4 : 32'd12);
+											mem_wdata <= decode_pc + (thumb ? 32'd6 : 32'd12);
 										else if (exec_block_user)
 											mem_wdata <= read_user_reg(exec_block_first_index[3:0]);
 										else
@@ -2459,7 +2590,7 @@ module arm7tdmi_core
 								else if (block_user)
 									mem_wdata <= read_user_reg(block_next_index[3:0]);
 								else
-									mem_wdata <= read_reg(block_next_index[3:0]);
+									mem_wdata <= reg_with_writeback(block_next_index[3:0]);
 								mem_wstrb <= block_load ? 4'b0 : 4'b1111;
 								mem_seq <= 1'b1;
 							end else begin
@@ -2467,8 +2598,12 @@ module arm7tdmi_core
 									regs[block_rn] <= block_writeback_value;
 								if (block_load && (block_index == 15)) begin
 									if (block_restore_cpsr) begin
-										save_active_bank(cpsr[4:0]);
-										load_active_bank(current_spsr[4:0]);
+										if (current_spsr[4:0] != cpsr[4:0]) begin
+											save_active_bank_wb(cpsr[4:0],
+												bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+											load_active_bank(current_spsr[4:0],
+												bank_switch_shared(cpsr[4:0], current_spsr[4:0]));
+										end
 										cpsr <= current_spsr;
 										finish_control(mem_rdata, current_spsr[5],
 											current_spsr[7:6], current_spsr[4:0]);
@@ -2504,7 +2639,7 @@ module arm7tdmi_core
 					mem_fetch <= 1'b0;
 					mem_lock <= 1'b0;
 					if (halt_capture_pending) begin
-						save_active_bank(cpsr[4:0]);
+						save_active_bank(cpsr[4:0], 1'b1);
 						state_pc <= halt_pc;
 						state_cpsr <= cpsr;
 						state_image_valid <= 1'b1;
@@ -2574,7 +2709,7 @@ module arm7tdmi_core
 						end
 						if (state_commit && state_image_valid && mode_valid(state_cpsr[4:0]) &&
 							((state_cpsr[5] && !state_pc[0]) || (!state_cpsr[5] && (state_pc[1:0] == 0)))) begin
-							load_active_bank(state_cpsr[4:0]);
+							load_active_bank(state_cpsr[4:0], 1'b1);
 							cpsr <= state_cpsr;
 							halt_pc <= align_pc(state_pc, state_cpsr[5]);
 							decode_valid <= 1'b0;

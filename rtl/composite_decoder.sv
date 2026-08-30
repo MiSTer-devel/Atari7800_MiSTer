@@ -110,8 +110,8 @@ localparam               BURST_SHIFT = 8;
 localparam [7:0]         BURST_CONV  = 8'd128;
 
 // Numerator of the once-per-line reciprocal, and with it the chroma gain: cg
-// and sg both scale with it. 1.156 x 2^30, set against the exact-signal decoder
-// test in .agents/tests/verilator/composite, not against the palette.
+// and sg both scale with it. 1.156 x 2^30, set against an exactly generated
+// composite signal rather than against any one console's palette.
 localparam [31:0]        DIV_NUM     = 32'h49F700A6;
 
 function automatic signed [15:0] sat16(input signed [17:0] v);
@@ -400,8 +400,8 @@ wire signed [33:0] sg_mul = qbh * $signed({1'b0, inv});
 wire signed [17:0] cg_raw =  cg_mul[BURST_SHIFT+17:BURST_SHIFT];
 // Dividing by the burst vector is (i+jq)*conj(B)/|B|^2, so the imaginary part
 // of the reference enters unnegated: the conjugate is already accounted for by
-// the minus in Q's expression below. Negating here as well turned the whole
-// picture 180 degrees whenever the burst sat on the q axis, which is where a
+// the minus in Q's expression below. Negating here as well would turn the whole
+// picture 180 degrees whenever the burst sits on the q axis, which is where a
 // real one lands.
 wire signed [17:0] sg_raw =  sg_mul[BURST_SHIFT+17:BURST_SHIFT];
 wire signed [25:0] cg_sat = cg_raw * $signed({1'b0, sat});

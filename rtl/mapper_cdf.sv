@@ -105,8 +105,8 @@ module mapper_cdf
 		a_in == fast_expected_address && operand_in_range;
 	assign stream_substitute = jump_substitute || fetch_substitute;
 	// Only a fetch substitution can land on the amplitude stream, and there the
-	// index is the operand itself. Testing the shared table_index instead put
-	// the jump path's adder in front of ram_en, 2.5 ns into a budget that
+	// index is the operand itself. Testing the shared table_index instead would
+	// put the jump path's adder in front of ram_en, 2.5 ns into a budget that
 	// starts back at the cartridge ROM.
 	assign amplitude_fetch = fetch_substitute && !jump_substitute &&
 		rom_data[5:0] == amplitude_operand;

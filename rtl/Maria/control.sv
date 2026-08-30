@@ -131,9 +131,9 @@ module control (
 			end else if (RW && cs_maria) begin
 				// Maria reads will return 0 if invalid. Not open bus or anything else.
 				if (AB[5:0] == 6'h28)
-					DB_out <= status_read;
+					DB_out_r <= status_read;
 				else
-					DB_out <= 8'h0;
+					DB_out_r <= 8'h0;
 			end
 		end else if (mclk0 && ~ctrl_write)
 			ctrl <= ctrl_1;
@@ -143,12 +143,28 @@ module control (
 		end
 
 		if (reset || ~maria_en) begin
-			ctrl_1 <= '1; // Allow skipping bios by disabling dma on reset
-			ctrl <= '1;
+			// '1 and the BIOS's $60 both hold DM = 11, so DMA stays off
+			// either way; $60 is what the BIOS actually leaves behind.
+			ctrl_1 <= bypass_bios ? 8'h60 : '1;
+			ctrl <= bypass_bios ? 8'h60 : '1;
 			color_map <= 200'b0; // FIXME: convert this to RAM?
 			char_base <= 8'b0;
-			DB_out <= 0;
-			{ZPH,ZPL} <= bypass_bios ? (pal ? {8'h27, 8'h30} : {8'h00, 8'h84}) : 8'd0;
+			DB_out_r <= 0;
+			// NTSC measured off the real BIOS at handoff; the PAL arm is
+			// unmeasured and left as it was.
+			{ZPH,ZPL} <= bypass_bios ? (pal ? {8'h27, 8'h30} : {8'h1F, 8'h84}) : 8'd0;
 		end
+	end
+
+	// MARIA presents read data as a bus buffer, not a phase 2 register. The
+	// CPU closes its data latch as phase 2 opens, so a value that only lands
+	// part way through that phase reads one cycle stale - MSTAT's live VBLANK
+	// bit is the one register where that shows. rtl/TIA.sv drives its pins the
+	// same way for the same reason.
+	logic [7:0] DB_out_r;
+	always_comb begin
+		DB_out = DB_out_r;
+		if (RW && cs_maria)
+			DB_out = (AB[5:0] == 6'h28) ? status_read : 8'h00;
 	end
 endmodule

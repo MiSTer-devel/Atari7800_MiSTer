@@ -291,15 +291,15 @@ wire hasMatchEF = hasMatchEF_0 | hasMatchEF_1| hasMatchEF_2 | hasMatchEF_3;
     { 0xAD, 0xE0, 0x1F }   // LDA $1FE0
   };
 */
-// One byte history for all the patterns below. Every matcher took the same
-// addr, data, enable and reset, so each was carrying its own copy of the same
-// shift register and its own 25-bit contiguity test - fifty-one of them.
+// One byte history and one contiguity test for every pattern below. All the
+// matchers watch the same addr, data, enable and reset, so a shift register and
+// a 25-bit address compare inside each would be fifty-one copies of this.
 reg [63:0] match_stream;
 reg [24:0] match_last_addr;
 reg        match_have_addr;
 wire match_contiguous = match_have_addr && addr == match_last_addr + 25'd1;
-// The matchers compare the value the stream is about to take, as they did when
-// each held its own copy.
+// The matchers compare the value the stream is about to take, not the one it
+// currently holds.
 wire [63:0] match_next = match_contiguous && !reset ?
 	{match_stream[55:0], data} : {56'b0, data};
 
