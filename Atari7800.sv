@@ -282,7 +282,7 @@ reg [7:0] joy0_type, joy1_type, cart_region, cart_save;
 
 logic [15:0] cart_flags;
 logic [39:0] cart_header;
-logic [31:0] cart_size;
+logic [31:0] cart_size;      // cartridge extent the core sees (decision 0066)
 logic [24:0] cart_addr;
 logic [7:0] cart_xm;
 logic cart_busy;
@@ -351,7 +351,6 @@ logic use_sk;
 
 logic core_paused;
 logic freeze_sync;
-logic cpu_ce;
 
 logic fa2_nvram_request;
 logic fa2_nvram_write;
@@ -575,7 +574,6 @@ detect2600 detect2600
 
 initial begin
 	cart_header = "ATARI";
-	cart_size = 32'h00008000;
 	cart_flags = 0;
 	cart_region = 0;
 	bios_mask = 0;
@@ -588,8 +586,6 @@ always_ff @(posedge clk_sys) begin
 	cart_is_7800 <= (cart_header == "ATARI");
 	if (bios_download && ioctl_wr) // This assumes bootrom is always power of two
 		bios_mask <= ioctl_addr[14:0];
-	if (cart_download && ioctl_wr)
-		cart_size <= (ioctl_addr - (cart_is_7800 ? 8'd128 : 1'b0)) + 1'd1; // 32 bit 1
 	if (cart_download) begin
 		tia_mode <= ioctl_index[7:6] != 0;
 		cart_loaded <= 1;
@@ -600,10 +596,6 @@ always_ff @(posedge clk_sys) begin
 				'd03: cart_header[23:16] <= ioctl_dout;
 				'd04: cart_header[15:8] <= ioctl_dout;
 				'd05: cart_header[7:0] <= ioctl_dout;
-				// 'd49: hcart_size[31:24] <= ioctl_dout;
-				// 'd50: hcart_size[23:16] <= ioctl_dout;
-				// 'd51: hcart_size[15:8] <= ioctl_dout;
-				// 'd52: hcart_size[7:0] <= ioctl_dout;
 				'd53: cart_flags[15:8] <= ioctl_dout;
 				'd54: cart_flags[7:0] <= ioctl_dout;
 				'd55: joy0_type <= ioctl_dout;   // 0=none, 1=joystick, 2=lightgun
@@ -627,6 +619,19 @@ always_ff @(posedge clk_sys) begin
 		end
 	end
 end
+
+// Decision 0066: the declared A78 size may only shrink the cartridge.
+a78_cart_extent cart_extent
+(
+	.clk           (clk_sys),
+	.cart_download (cart_download),
+	.ioctl_wr      (ioctl_wr),
+	.ioctl_addr    (ioctl_addr),
+	.ioctl_dout    (ioctl_dout),
+	.cart_is_7800  (cart_is_7800),
+	.tia_mode      (ioctl_index[7:6] != 0),
+	.cart_size     (cart_size)
+);
 
 logic [24:0] cart_write_addr, fixed_addr;
 assign cart_write_addr = (ioctl_addr >= 8'd128) && cart_is_7800 ? (ioctl_addr[24:0] - 8'd128) : ioctl_addr[24:0];
@@ -1253,7 +1258,7 @@ video_mixer_plus #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1), .COMP_SPC(4)) v
 	.comp_burst_len  (comp_burst_len),
 	.comp_sat        (8'd128),
 	.comp_hue        (8'd0),
-	.comp_smear      (4'd3),
+	.comp_smear      (4'd2),
 	.comp_luma_delay (4'd2),
 	// The 7800 has no setup, like NTSC-J; NTSC-M would be 439.
 	.comp_setup      (16'd0),
@@ -1350,11 +1355,17 @@ EEPROM_24LC0X
 	.ram_done       (1)
 );
 
-dpram_dc #(.widthad_a(14)) hsc_ram
+// 15 bits, not 14: the SaveKey is a 24LC256 with a 15-bit address, and the
+// save transfer below walks sd_lba 0..63 - 64 sectors, 32 KiB. At 14 bits both
+// wrapped, so the SaveKey's upper half aliased onto its lower half and the
+// second half of every save file overwrote the first on load.
+dpram_dc #(.widthad_a(15)) hsc_ram
 (
 	.clock_a   (clk_sys),
-	.address_a (fa2_backing_cs ? {6'd0, fa2_backing_addr} :
-		(use_sk ? sk_ram_addr : bios_addr)),
+	// The HSC shares this port and arrives on the 16-bit system bus; it lives
+	// at $1000-$17FF, so dropping A15 is exact.
+	.address_a (fa2_backing_cs ? {7'd0, fa2_backing_addr} :
+		(use_sk ? sk_ram_addr : bios_addr[14:0])),
 	.data_a    (fa2_backing_cs ? fa2_backing_wdata :
 		(use_sk ? sk_ram_do : din)),
 	.wren_a    (fa2_backing_cs ? fa2_backing_write :
@@ -1362,7 +1373,7 @@ dpram_dc #(.widthad_a(14)) hsc_ram
 	.q_a       (hsc_ram_dout),
 
 	.clock_b   (clk_sys),
-	.address_b ({sd_lba[0][5:0],sd_buff_addr}),
+	.address_b ({sd_lba[0][5:0], sd_buff_addr}),
 	.data_b    (sd_buff_dout),
 	.wren_b    (sd_buff_wr & sd_ack),
 	.q_b       (sd_buff_din[0])

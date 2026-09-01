@@ -295,7 +295,7 @@ module mapper_dpcplus
 										call_pending <= 1'b1;
 								end
 								3'd5, 3'd6, 3'd7:
-									waveform[a_in[2:0] - 3'd5] <= d_in[6:0];
+									waveform[a_in[1:0] - 2'd1] <= d_in[6:0]; // a_in[2:0] is 5, 6 or 7 here
 								default: ;
 							endcase
 						end

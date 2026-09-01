@@ -104,7 +104,6 @@ module minnie_wave (
 		.clock   (clk),
 		.address (addr),
 		.data    (cpu_data),
-		.enable  (1'b1),
 		.wren    (cpu_wr),
 		.q       (stored),
 		.cs      (1'b1)

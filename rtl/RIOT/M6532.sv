@@ -31,7 +31,7 @@ module M6532
 	input  [6:0] addr,      // Address
 	input        RW_n,      // 1 = read, 0 = write
 	input  [7:0] d_in,
-	output logic [7:0] d_out,
+	output       [7:0] d_out,
 	input        RS_n,      // RAM select
 	output       IRQ_n,
 	output       IRQ_n_oe,  // IRQ pulls low, and is otherwise released
@@ -45,7 +45,6 @@ module M6532
 	output       PA_read    // A selected read of ORA is happening now
 );
 
-reg [7:0] riot_ram[128];
 reg [7:0] out_a, out_b, data;
 reg [7:0] dir_a, dir_b;
 reg [7:0] interrupt;
@@ -60,6 +59,13 @@ reg old_pa7;
 
 reg [6:0] init_addr;
 
+// The 128 byte RAM lives in the project block RAM wrapper. Its q lands one
+// clock after the address, which is where the old array read landed, so
+// d_out takes it live for that one cycle and d_out_reg holds it after.
+wire [7:0] ram_q;
+reg  [7:0] d_out_reg;
+reg        ram_read_r;
+
 // The 7800 BIOS leaves this loader in RIOT RAM before it starts a cart, so
 // bypassing the BIOS has to put it there. Byte 8 and the last two bytes are
 // deliberate Decathlon workarounds.
@@ -73,6 +79,26 @@ wire [7:0] init_image [128] = '{
 	8'h08, 8'h6C, 8'hFC, 8'hFF, 8'hEA, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF,
 	8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'hFF, 8'h00, 8'h00
 };
+
+// 128 bytes is over the AGENTS.md threshold for an inferred array, so the RAM
+// is a wrapper instance. Port A is the CPU side and port B the power up walk;
+// they never write together because the console drives ram_init from its
+// reset, which is the same signal that holds res_n low.
+wire       ram_cpu_wr = res_n && ce && (CS1 & ~CS2_n) && ~RS_n && ~RW_n;
+wire [7:0] ram_init_d = ram_init_7800 ? init_image[init_addr] : 8'h00;
+
+cache_ram_dp #(.ADDR_WIDTH(7), .DATA_WIDTH(8)) riot_ram
+(
+	.clk_i     (clk),
+	.addr_a_i  (addr),
+	.wren_a_i  (ram_cpu_wr),
+	.wdata_a_i (d_in),
+	.q_a_o     (ram_q),
+	.addr_b_i  (init_addr),
+	.wren_b_i  (ram_init),
+	.wdata_b_i (ram_init_d),
+	.q_b_o     ()
+);
 
 // IRQ is open drain on the part: it pulls the line low and otherwise releases
 // it to an external pull up. IRQ_n is the resolved level for internal use.
@@ -103,32 +129,40 @@ assign oe = res_n && (CS1 & ~CS2_n) && RW_n && ce;
 // A4:A3 don't care, so $0280, $0288, $0290 and $0298 are all the same read.
 assign PA_read = oe && RS_n && ~addr[2] && ~|addr[1:0];
 
+assign d_out = ram_read_r ? ram_q : d_out_reg;
+
 always_ff @(posedge clk) begin
-	if ((CS1 & ~CS2_n) && RW_n) begin
-		if (~RS_n) begin // RAM selected
-			d_out <= riot_ram[addr];
-		end else if (~addr[2]) begin // Address registers
+	// A selected RAM read this cycle puts the wrapper's answer on the bus next
+	// cycle; capturing it as well keeps it there once the selection goes away.
+	ram_read_r <= res_n && (CS1 & ~CS2_n) && RW_n && ~RS_n;
+	if (ram_read_r)
+		d_out_reg <= ram_q;
+
+	if ((CS1 & ~CS2_n) && RW_n && RS_n) begin
+		if (~addr[2]) begin // Address registers
 			case(addr[1:0])
-				2'b01: d_out <= dir_a; // DDRA
-				2'b11: d_out <= dir_b; // DDRB
-				2'b00: d_out <= (PA_in & PA_out); // Input A, always the pin
+				2'b01: d_out_reg <= dir_a; // DDRA
+				2'b11: d_out_reg <= dir_b; // DDRB
+				2'b00: d_out_reg <= (PA_in & PA_out); // Input A, always the pin
 				// Port B is the exception: a bit set to output reads its own
 				// output register back, so an outside low cannot mask a
 				// driven high. DDRB=$01, ORB=$01, PB pins $FE reads $FF.
-				2'b10: d_out <= (dir_b & out_b) | (~dir_b & PB_in);
+				2'b10: d_out_reg <= (dir_b & out_b) | (~dir_b & PB_in);
 			endcase
-		end else if (addr[2])begin // Timer & Interrupts
+		end else begin // Timer & Interrupts
 			// The counter takes its new value at the end of this cycle and
 			// the bus already carries it: write 52 at /8, and the first
 			// read after that is 51, not 52.
 			if (~addr[0])
-				d_out <= tick_inc ? timer - 8'd1 : timer;
+				d_out_reg <= tick_inc ? timer - 8'd1 : timer;
 			else
-				d_out <= {interrupt[7:6], 6'd0};
+				d_out_reg <= {interrupt[7:6], 6'd0};
 		end
 	end
-	if (~res_n)
-		d_out <= 8'hFF;
+	if (~res_n) begin
+		d_out_reg <= 8'hFF;
+		ram_read_r <= 1'b0;
+	end
 end
 
 always_ff @(posedge clk) begin
@@ -140,7 +174,6 @@ always_ff @(posedge clk) begin
 	// or a reset on every one.
 	if (ram_init) begin
 		init_addr <= init_addr + 1'd1;
-		riot_ram[init_addr] <= ram_init_7800 ? init_image[init_addr] : 8'h00;
 	end else begin
 		init_addr <= 7'd0;
 	end
@@ -163,9 +196,7 @@ always_ff @(posedge clk) begin
 			timer <= timer - 8'd1;
 
 		if (CS1 & ~CS2_n) begin
-			if (~RS_n) begin // RAM selected
-				if (~RW_n)
-					riot_ram[addr] <= d_in;
+			if (~RS_n) begin // RAM selected, written through the wrapper above
 			end else if (~addr[2]) begin // Address registers
 				if (~RW_n) begin
 					case(addr[1:0])

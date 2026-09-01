@@ -14,14 +14,14 @@ module mapper_none
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	assign rom_a = {4'd0, a_in[11:0]};
@@ -41,14 +41,14 @@ module mapper_F8
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic bank;
@@ -82,14 +82,14 @@ module mapper_F6
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [1:0] bank;
@@ -125,7 +125,7 @@ module mapper_FE // SCABS
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a,
 	// Special
 	input           ce
@@ -134,7 +134,7 @@ module mapper_FE // SCABS
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic bank;
@@ -174,14 +174,14 @@ module mapper_E0
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [2:0] banks[3];
@@ -226,14 +226,14 @@ module mapper_3F
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [7:0] bank;
@@ -264,14 +264,14 @@ module mapper_F4
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [2:0] bank;
@@ -311,7 +311,7 @@ module mapper_P2
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a,
 	// Special
 	input           ce
@@ -327,7 +327,7 @@ module mapper_P2
 	logic dpc_oe;
 	logic [9:0] music_div;
 	logic [15:0] music_clock;
-	logic [15:0] rom_a_next;
+	logic [18:0] rom_a_next;
 
 	wire [7:0] amplitude_lut[8] = '{8'h0F, 8'h0B, 8'h0A, 8'h06, 8'h09, 8'h05, 8'h04, 8'h00};
 	wire [7:0] rom_do_i = ~|dpc_addr ? (~music_en ? rand_val : amplitude_lut[music_amp_index]) :
@@ -336,7 +336,7 @@ module mapper_P2
 	assign flags_out = {13'd0, dpc_oe && and_do_en, dpc_oe && direct_en};
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : (dpc_oe ? 8'hFF : 8'h00)) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 	assign d_out = rom_do_i;
 
@@ -361,12 +361,12 @@ module mapper_P2
 
 	always @(posedge clk) begin
 		if (a_change) begin
-			rom_a_next <= (is_dpc && (dpc_addr == 1 || dpc_addr == 2)) ? {5'b00100, ~counters[index]} : {3'd0, bank, a_in[11:0]};
+			rom_a_next <= (is_dpc && (dpc_addr == 1 || dpc_addr == 2)) ? {8'b00000100, ~counters[index]} : {6'd0, bank, a_in[11:0]};
 			if (a_in[12]) begin
 				rand_val <= {rand_val[6:0], ~(rand_val[7] ^ rand_val[5] ^ rand_val[4] ^ rand_val[3])};
 				if (is_dpc) begin
 					if (dpc_rw) begin // read
-						if (index < 5 || (index >= 5 && music_modes[ain_minus_5])) begin
+						if (index < 5 || (index >= 5 && music_modes[ain_minus_5[1:0]])) begin
 							counters[index] <= counters[index] - 1'd1;
 						end
 
@@ -389,7 +389,7 @@ module mapper_P2
 							3'h3: begin
 								counters[index][10:8] <= d_in[2:0];
 								if (index >= 3'd5)
-									music_modes[ain_minus_5] <= d_in[4];
+									music_modes[ain_minus_5[1:0]] <= d_in[4];
 							end
 							3'h6: rand_val <= 8'h01;
 							default: ;
@@ -410,20 +410,11 @@ module mapper_P2
 			if (music_div == 178) begin // Divide down to 15-20khz (180 == 19.88khz, 170 = 21khz)
 				music_div <= 10'd0;
 				music_clock <= music_clock + 1'd1;
-				if (music_clock % (tops[5] + 1'd1) > bottoms[5])
-					flags[5] <= 8'hFF;
-				else
-					flags[5] <= 8'h00;
-
-				if (music_clock % (tops[6] + 1'd1) > bottoms[6])
-					flags[6] <= 8'hFF;
-				else
-					flags[6] <= 8'h00;
-
-				if (music_clock % (tops[7] + 1'd1) > bottoms[7])
-					flags[7] <= 8'hFF;
-				else
-					flags[7] <= 8'h00;
+				// music_rem[v] is music_clock % (tops[v + 5] + 1), settled by
+				// the modulo engine below.
+				flags[5] <= (music_rem[0] > bottoms[5]) ? 8'hFF : 8'h00;
+				flags[6] <= (music_rem[1] > bottoms[6]) ? 8'hFF : 8'h00;
+				flags[7] <= (music_rem[2] > bottoms[7]) ? 8'hFF : 8'h00;
 			end
 		end
 		if (reset) begin
@@ -436,6 +427,67 @@ module mapper_P2
 			music_modes <= '0;
 			music_clock <= '0;
 			music_div <= '0;
+		end
+	end
+
+
+	// The three music flags need music_clock % (tops[v] + 1). A runtime divider
+	// is not allowed in synthesizable RTL and Quartus inferred three of them
+	// here, so this is a restoring modulo instead: one shifted compare and
+	// subtract per clk_sys cycle, sixteen steps for the sixteen bits of
+	// music_clock. A remainder is always below its divisor, which is at most
+	// 256, so eight bits hold it and the compare is nine bits wide.
+	//
+	// A pass runs on the value the *next* tick will read and restarts on a top
+	// write. Ticks are 179 ce apart - thousands of clk_sys cycles - and a pass
+	// is sixteen, so the answer has long settled by the time a tick uses it.
+	// The one case that is not exact: a top written inside the sixteen cycles
+	// before a tick leaves that single tick on the previous divisor.
+	logic [15:0] mod_num;      // the dividend this pass is working on
+	logic [7:0]  mod_rem[3];   // working remainder per voice
+	logic [7:0]  music_rem[3]; // the settled answers the tick reads
+	logic [8:0]  mod_res[3];   // this step's result
+	logic [3:0]  mod_step;
+	logic        mod_run;
+
+	wire music_tick = ce && (music_div == 10'd178);
+	wire tops_write = a_change && a_in[12] && is_dpc && ~dpc_rw && (dpc_addr == 3'h0);
+	wire mod_bit    = mod_num[~mod_step]; // MSB first: step 0 takes bit 15
+
+	genvar v;
+	generate
+		for (v = 0; v < 3; v = v + 1) begin : music_mod
+			wire [8:0] divisor = {1'b0, tops[v + 5]} + 9'd1;
+			wire [8:0] shifted = {mod_rem[v], mod_bit};
+			assign mod_res[v] = (shifted >= divisor) ? (shifted - divisor) : shifted;
+		end
+	endgenerate
+
+	always @(posedge clk) begin
+		if (music_tick || tops_write) begin
+			mod_num  <= music_tick ? (music_clock + 1'd1) : music_clock;
+			mod_rem  <= '{3{8'd0}};
+			mod_step <= 4'd0;
+			mod_run  <= 1'b1;
+		end else if (mod_run) begin
+			mod_rem[0] <= mod_res[0][7:0];
+			mod_rem[1] <= mod_res[1][7:0];
+			mod_rem[2] <= mod_res[2][7:0];
+			mod_step   <= mod_step + 1'd1;
+			if (&mod_step) begin // the sixteenth step carries the remainder
+				mod_run      <= 1'b0;
+				music_rem[0] <= mod_res[0][7:0];
+				music_rem[1] <= mod_res[1][7:0];
+				music_rem[2] <= mod_res[2][7:0];
+			end
+		end
+
+		if (reset) begin
+			mod_run   <= 1'b0;
+			mod_step  <= 4'd0;
+			mod_num   <= 16'd0;
+			mod_rem   <= '{3{8'd0}};
+			music_rem <= '{3{8'd0}};
 		end
 	end
 
@@ -454,14 +506,14 @@ module mapper_FA
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : (a_in[12:9] == 4'b1000);
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : {3'd0, a_in[7:0]};
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : {10'd0, a_in[7:0]};
 	assign ram_rw = sc ? a_in[7] : a_in[8];
 
 	logic [1:0] bank;
@@ -496,14 +548,14 @@ module mapper_CV
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : (a_in[12:11] == 2'b10);
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : {1'd0, a_in[9:0]};
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : {8'd0, a_in[9:0]};
 	assign ram_rw = sc ? a_in[7] : ~a_in[10];
 
 	assign rom_a = {4'd0, a_in[10:0]};
@@ -522,14 +574,14 @@ module mapper_2K
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	assign rom_a = {4'd0, a_in[10:0]};
@@ -549,7 +601,7 @@ module mapper_UA
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a,
 	// special
 	input           swapped // Swapped flag for the UASW mapper (Mickey)
@@ -558,7 +610,7 @@ module mapper_UA
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic bank;
@@ -592,8 +644,8 @@ module mapper_E7
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
-	output  logic [15:0]  rom_a
+	output  [17:0]  ram_a,
+	output  logic [18:0]  rom_a
 );
 	logic [2:0] bank;
 	logic [1:0] ram_bank;
@@ -603,7 +655,7 @@ module mapper_E7
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = (((a_in[12:11] == 2'b10) && &bank) || a_in[12:9] == 4'b1100);
-	assign ram_a = (a_in[12:11] == 2'b10 ? {1'b0, a_in[9:0]} : {1'b1, ram_bank, a_in[7:0]});
+	assign ram_a = (a_in[12:11] == 2'b10 ? {8'd0, a_in[9:0]} : {7'd0, 1'b1, ram_bank, a_in[7:0]});
 	assign ram_rw = (a_in[12:11] == 2'b10 ? (a_in[10] || ~&bank) : a_in[8]);
 
 	always_comb begin
@@ -643,14 +695,14 @@ module mapper_F0
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [3:0] bank;
@@ -681,7 +733,7 @@ module mapper_32
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a,
 	// Special
 	input           cold_reset
@@ -690,7 +742,7 @@ module mapper_32
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [4:0] bank;
@@ -711,7 +763,6 @@ module mapper_AR
 (
 	input           clk,
 	input           reset,
-	input           cold_reset,
 	input           a_change,
 	input           sc,
 	input   [12:0]  a_in,
@@ -721,7 +772,7 @@ module mapper_AR
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [12:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a,
 	// Special
 	input           ce, // 3.579 mhz
@@ -810,7 +861,7 @@ module mapper_AR
 	assign flags_out = {15'd0, rom_bank || ~ram_rw || adata_select};
 	assign oe = a_in[12] ? 8'hFF : 8'h00;
 	assign ram_sel = a_in[12] && ~rom_bank;
-	assign ram_a = {current_bank, a_in[10:0]};
+	assign ram_a = {5'd0, current_bank, a_in[10:0]};
 	assign ram_rw = ~(a_in[12] && ram_we && we_cycle[5] && ~a_change && ~is_control_reg && ~rom_bank);
 	assign rom_a = preload_a + tape_offset;
 	assign ar_read = ce;
@@ -825,7 +876,6 @@ module mapper_AR
 	(
 		.clock      (clk),
 		.address    (a_in[10:0]),
-		.enable     (1'b1),
 		.data       (8'd0),
 		.wren       (1'b0),
 		.cs         (1'b1),
@@ -898,7 +948,7 @@ module mapper_AR
 					end
 				end
 				AR_LOAD_HEADER: begin
-					header_array[header_a] <= ((header_a != 4) ? rom_do : 0);
+					header_array[header_a[2:0]] <= ((header_a != 4) ? rom_do : 8'd0);
 					if (header_a == 3) begin
 						page_count <= rom_do;
 					end
@@ -913,14 +963,14 @@ module mapper_AR
 					state <= AR_FETCH;
 				end
 				AR_LOAD_BLOCK_BYTE: begin
-					block_byte_array[page_position] <= rom_do;
+					block_byte_array[page_position[4:0]] <= rom_do;
 					block_checksum <= 0;
 					state_next <= AR_CALC_CHECKSUMS;
 					state <= AR_FETCH;
 				end
 				AR_CALC_CHECKSUMS: begin
 					if (&bank_a) begin
-						cs_array[page_position] <= 8'h55 - block_byte_array[page_position] - (block_checksum + rom_do);
+						cs_array[page_position[4:0]] <= 8'h55 - block_byte_array[page_position[4:0]] - (block_checksum + rom_do);
 						page_position <= page_position + 1'd1;
 						state_next <= (page_position == (page_count - 1'd1)) || (page_position == 23) ?
 							AR_PREAMBLE : AR_LOAD_BLOCK_BYTE;				
@@ -941,7 +991,7 @@ module mapper_AR
 				end
 				AR_HEADER: begin
 					if (fix_sc_cs)
-						audio_buffer <= header_array[header_a];
+						audio_buffer <= header_array[header_a[2:0]];
 					else
 						audio_buffer <= rom_do;
 					if (header_a < 7) begin
@@ -956,7 +1006,7 @@ module mapper_AR
 				end
 				AR_BLOCK_BYTE: begin
 					if (fix_sc_cs)
-						audio_buffer <= block_byte_array[page_position];
+						audio_buffer <= block_byte_array[page_position[4:0]];
 					else
 						audio_buffer <= rom_do;
 					state_next <= AR_CHECKSUM;
@@ -964,7 +1014,7 @@ module mapper_AR
 				end
 				AR_CHECKSUM: begin
 					if (fix_sc_cs)
-						audio_buffer <= cs_array[page_position];
+						audio_buffer <= cs_array[page_position[4:0]];
 					else
 						audio_buffer <= rom_do;
 					bank_a <= 0;
@@ -1043,7 +1093,6 @@ module mapper_WD
 (
 	input           clk,
 	input           reset,
-	input           cold_reset,
 	input           a_change,
 	input           sc,
 	input   [12:0]  a_in,
@@ -1053,7 +1102,7 @@ module mapper_WD
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	logic [2:0] bank_config;
@@ -1078,7 +1127,7 @@ module mapper_WD
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = a_in[12] && ~|a_in[11:7];
-	assign ram_a = {5'd0, a_in[5:0]};
+	assign ram_a = {12'd0, a_in[5:0]};
 	assign ram_rw = ~a_in[6] || ~ram_sel;
 	assign rom_a = {6'd0, bank_out, a_in[9:0]};
 
@@ -1172,14 +1221,14 @@ module mapper_SB
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [6:0] bank;
@@ -1211,14 +1260,14 @@ module mapper_EF
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [3:0] bank;
@@ -1250,14 +1299,14 @@ module mapper_JANE
 	output  [7:0]   oe,
 	output          ram_sel,
 	output          ram_rw,
-	output  [10:0]  ram_a,
+	output  [17:0]  ram_a,
 	output  [18:0]  rom_a
 );
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
 	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
 	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
-	assign ram_a = sc ? {4'd0, a_in[6:0]} : 11'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
 	assign ram_rw = sc ? a_in[7] : 1'd1;
 
 	logic [1:0] bank;

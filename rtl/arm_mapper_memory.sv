@@ -412,8 +412,23 @@ module arm_mapper_memory
 	logic  [3:0] req_wstrb;
 	logic        req_fetch;
 
-	logic [20:0] ic_tag [0:63];
-	logic [20:0] dc_tag [0:63];
+	// 64 x 21 bits each, past the 64-byte threshold, so the choice is pinned
+	// rather than left to inference.
+	//
+	// The earlier note here said a tag array cannot be block RAM because the
+	// hit compare is combinational. That is not what the tool builds: the
+	// 2026-08-30 fit reports "Inferred RAM node ... ic_tag_rtl_0" and
+	// "dc_tag_rtl_0" (Warning 276020) and the timing netlist carries
+	// altsyncram:ic_tag_rtl_0. req_addr is already a register, so Quartus
+	// absorbs it as the M10K address register and adds read-during-write
+	// pass-through to keep the old-data semantics the register array had.
+	// The same-cycle answer decision 0063 needs still holds.
+	//
+	// Left in M10K: forcing ramstyle "logic" would spend about 2700 registers
+	// on a design already at 85% ALMs, and buys only the pass-through mux.
+	// Named explicitly so a heuristic change cannot flip it silently.
+	logic [20:0] ic_tag [0:63] /* synthesis ramstyle = "M10K" */;
+	logic [20:0] dc_tag [0:63] /* synthesis ramstyle = "M10K" */;
 	logic [63:0] ic_valid;
 	logic [63:0] dc_valid;
 	logic [5:0] fill_index;
@@ -537,7 +552,20 @@ module arm_mapper_memory
 	wire hit_sentinel = req_phase && dec_sentinel;
 	wire hit_bad      = req_phase && !dec_sentinel && dec_bad;
 	wire hit_rom_wr   = dec_ok && dec_rom && mem_write;
-	wire hit_line     = dec_ok && dec_rom && !mem_write && mem_fetch &&
+	// Split so the 27-bit tag compare stays out of the mem_rdata cone. On the
+	// 2026-08-30 fit the worst clk_arm path ran mem_addr -> hit_line (3 LUT)
+	// -> mem_rdata -> the core's ror32 and multiply operand select, 16.5 ns in
+	// a 13.969 ns period. line_select alone picks the word; the compare only
+	// gates mem_ready.
+	//
+	// Equivalent, not an approximation. Every other arm of the mem_rdata mux
+	// requires !dec_rom (hit_mmio, hit_none), !dec_ok (hit_sentinel) or
+	// bus_state != BUS_IDLE (cache_hit_now, fill_hit_now, ram_rd_now), so
+	// line_select excludes all of them. In the one cycle the two differ -
+	// line_select set, tag missed - every term of mem_ready is false by those
+	// same conditions, so the core never samples what changed.
+	wire line_select  = dec_ok && dec_rom && !mem_write && mem_fetch;
+	wire hit_line     = line_select &&
 		fetch_line_valid && fetch_line_tag == mem_addr[31:5];
 	wire rom_lookup   = dec_ok && dec_rom && !mem_write && !hit_line;
 	// The RAM port sits one ARM edge in five out to stay clear of the mapper
@@ -571,7 +599,7 @@ module arm_mapper_memory
 		cache_hit_now || fill_hit_now || ram_wr_now || ram_rd_now;
 	assign mem_abort = hit_bad || hit_rom_wr || hit_none;
 	assign mem_rdata =
-		hit_line     ? line_word(fetch_line_data, mem_addr[4:2]) :
+		line_select  ? line_word(fetch_line_data, mem_addr[4:2]) :
 		hit_mmio     ? mmio_rdata :
 		hit_sentinel ? 32'b0 :
 		cache_hit_now ? line_word(selected_cache_data, req_addr[4:2]) :

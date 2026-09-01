@@ -307,7 +307,7 @@ always_ff @(posedge clk_sys) begin
 	end
 
 	if (mclk0) begin
-		if (sel5_cnt)
+		if (|sel5_cnt)
 			sel5_cnt <= sel5_cnt - 1'd1;
 		sel_last <= sel;
 		// if (sel[6]) begin

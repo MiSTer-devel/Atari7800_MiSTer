@@ -42,6 +42,11 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/EEPROM_24LC256.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/detect2600.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/a78_cart_extent.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bupchip_peripheral.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bupchip_memory.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bupchip_asset_ddr.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bupchip_subsystem.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/RIOT/M6532.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE Atari7800.sv

@@ -54,7 +54,8 @@ module souper(
 	mapAddr_7p,
 
 	audCom,
-	audReq_n
+	audReq_n,
+	audReq_logic
 );
 	// System Clocks and Reset
 	//------------------------------
@@ -96,6 +97,11 @@ module souper(
 	//------------------------------
 	output[7:0]		audCom;
 	output			audReq_n;
+	// Not a cartridge pin. audReq_n is open drain, and a consumer inside the
+	// FPGA must never sample a `Z`, so the request register is exported
+	// directly for the on-chip BupChip bridge. The pin behaviour above is
+	// unchanged.
+	output			audReq_logic;
 
 
 //******************************************************************************
@@ -269,6 +275,7 @@ end
 
 assign audCom = audData_ir;
 assign audReq_n = audReq_ir ? 1'bZ : 1'b0;
+assign audReq_logic = audReq_ir;
 
 
 //******************************************************************************

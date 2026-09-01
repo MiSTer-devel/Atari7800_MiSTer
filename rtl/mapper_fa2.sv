@@ -86,7 +86,6 @@ module mapper_fa2
 		.clock   (clk),
 		.address (ram_addr),
 		.data    (ram_wdata),
-		.enable  (1'b1),
 		.wren    (ram_wren),
 		.q       (ram_q),
 		.cs      (1'b1)

@@ -110,8 +110,9 @@ if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|genera
 # clk_arm is the core's worst clock, -2.515 ns setup, and none of that is an
 # SDC problem: the paths are the ARM's own decode and operand mux in series
 # with arm_mapper_memory's combinational answer, inside one 13.969 ns period.
-# The multiply is genuinely single-cycle - dp_multiply_wait can be 1, and
-# MUL_WAIT reads multiply_result on the very next edge when it is. Closing it
-# needs RTL. The file below relaxes the one thing that is an SDC problem, the
-# quasi-static cartridge selection reaching the ARM's memory map.
+# Since the 2026-08-31 core restructure the multiplier is iterative and never
+# on that loop, so the operand loop and the mapper's combinational answer are
+# what remain; closing them needs RTL. The file below relaxes the one thing
+# that is an SDC problem, the quasi-static cartridge selection reaching the
+# ARM's memory map.
 source rtl/arm7tdmi/arm7tdmi.sdc

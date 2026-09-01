@@ -19,11 +19,6 @@ module spram
 	input  wire                  clock,
 	input  wire [addr_width-1:0] address,
 	input  wire [data_width-1:0] data,
-	/* verilator lint_off UNUSED */
-	// Present for pin compatibility only. The VHDL this replaces left the
-	// altsyncram clocken0 port unmapped, so enable never had an effect.
-	input  wire                  enable,
-	/* verilator lint_on UNUSED */
 	input  wire                  wren,
 	output wire [data_width-1:0] q,
 	input  wire                  cs

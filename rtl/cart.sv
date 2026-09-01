@@ -24,6 +24,10 @@ module cart
 	input  logic  [7:0] open_bus,
 	input  logic [10:0] ps2_key,
 	input  logic        pokey_irq_en,
+
+	// Souper audio command port, one event per $8007 write pair.
+	output logic        aud_cmd_valid,
+	output logic  [7:0] aud_cmd_data,
 	input  logic        minnie_en,
 	input  logic [7:0]  cartram_data,
 
@@ -100,9 +104,9 @@ wire is_bankset_mem = cart_flags[14];
 wire bankset_banks = is_bankset & bankset_count[1];
 assign cart_size_bs = is_bankset ? (cart_size >> 1'd1) : cart_size;
 
-wire [7:0] num_banks = (cart_size_bs >> 14);
-wire [7:0] highest_bank = num_banks ? num_banks - 1'd1 : is_9b;
-wire [7:0] second_highest_bank = is_9b ? 8'd0 : (highest_bank ? highest_bank - 1'd1 : 8'd0);
+wire [7:0] num_banks = cart_size_bs[21:14];
+wire [7:0] highest_bank = |num_banks ? num_banks - 1'd1 : is_9b;
+wire [7:0] second_highest_bank = is_9b ? 8'd0 : (|highest_bank ? highest_bank - 1'd1 : 8'd0);
 wire [7:0] sg_bank = (bank_reg & bank_mask) + is_9b;
 wire is_bankset_52k = (is_bankset && cart_size_bs == 32'hD000);
 
@@ -424,7 +428,7 @@ end
 logic [3:0] ch0, ch1, ch2, ch3, ch0_2, ch1_2, ch2_2, ch3_2;
 logic [15:0] pokey_aud, pokey2_aud;
 logic [15:0] pokey_mux, pokey2_mux;
-logic [3:0] pokey2_cs;
+logic pokey2_cs;
 logic using_two_pokey;
 
 always @(posedge clk_sys) begin
@@ -623,6 +627,8 @@ spram #(
 assign hsc_ram_dout = hsc_ram_din;
 
 logic souper_rom_cs;
+logic [7:0] souper_aud_data;
+logic       souper_aud_req;
 assign souper_addr = {souper_bank, address_in[6:0]};
 
 souper soup_soup (
@@ -649,9 +655,42 @@ souper soup_soup (
 	.oe_n       (),
 	.wr_n       (souper_wr),
 	.mapAddr_7p (souper_bank),
-	.audCom     (),
-	.audReq_n   ()
+	.audCom       (souper_aud_data),
+	.audReq_n     (),
+	.audReq_logic (souper_aud_req)
 );
+
+// The cartridge pin is open drain, but a consumer inside the FPGA must not
+// sample a `Z`. souper.v inverts its request register on every $8007 write, so
+// the logical toggle is exported directly and edge-detected here.
+//
+// A game writes $8007 twice per command so that the request line emits one
+// complete pulse whatever level it started at (see
+// .agents/evidence/bupchip_8007_command_encoding.md). Delivering one event per
+// toggle would therefore duplicate every command, so this counts pairs: the
+// byte is published on the second toggle.
+logic souper_aud_req_d;
+logic souper_aud_phase;
+
+always_ff @(posedge clk_sys) begin
+	if (reset) begin
+		souper_aud_req_d <= 1'b1;
+		souper_aud_phase <= 1'b0;
+		aud_cmd_valid <= 1'b0;
+		aud_cmd_data <= 8'd0;
+	end else begin
+		aud_cmd_valid <= 1'b0;
+		souper_aud_req_d <= souper_aud_req;
+		if (souper_aud_req != souper_aud_req_d) begin
+			souper_aud_phase <= ~souper_aud_phase;
+			if (souper_aud_phase) begin
+				aud_cmd_data  <= souper_aud_data;
+				aud_cmd_valid <= 1'b1;
+			end
+		end
+	end
+end
+
 
 endmodule: cart
 

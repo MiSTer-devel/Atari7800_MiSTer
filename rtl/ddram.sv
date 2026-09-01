@@ -16,7 +16,27 @@
 // A channel holds ch_req until it sees ch_ack, then counts ch_len beats on
 // ch_rvalid for a read. A write returns no beats and is finished at ch_ack.
 // One transaction is outstanding at a time.
+//
+// Nothing outside this module can recover a transaction that never finishes.
+// The response is untagged, so a consumer waiting on its last beat cannot tell
+// "slow" from "never", and the rule above - no new command until the current
+// one has returned every beat - means one lost beat stops both channels for
+// good, not just the one that asked. Measured: drop a single beat under the
+// BupChip and the asset cache waits for it forever, the ARM stalls inside a
+// read that never completes, and the PCM FIFO drains to silence while the rest
+// of the core carries on. So the bridge bounds the wait itself: a transaction
+// that goes quiet for TIMEOUT cycles is abandoned, the channel that owns it is
+// told, and the port is released. QUARANTINE then holds off the next command
+// long enough that a beat which merely arrived late cannot be counted against
+// it.
 module ddram
+#(
+	// ~114 us at 71.58 MHz. Far longer than any legitimate DDR3 answer, even
+	// with the HPS holding the window, and far shorter than the 85 ms the PCM
+	// FIFO carries - so a timeout is inaudible and only a real stall trips it.
+	parameter int TIMEOUT    = 8191,
+	parameter int QUARANTINE = 63
+)
 (
 	input  logic        clk,
 	input  logic        reset,
@@ -53,7 +73,13 @@ module ddram
 	input  logic        ch2_rnw,
 	output logic        ch2_ack,
 	output logic [63:0] ch2_dout,
-	output logic        ch2_rvalid
+	output logic        ch2_rvalid,
+
+	// One pulse when this channel's outstanding transaction was abandoned. The
+	// consumer must re-issue; nothing was written to it and no more beats are
+	// coming.
+	output logic        ch1_timeout,
+	output logic        ch2_timeout
 );
 	assign DDRAM_CLK = clk;
 
@@ -67,6 +93,9 @@ module ddram
 	logic [7:0] presented_len;
 	logic       owner;          // channel the outstanding transaction belongs to
 	logic [7:0] beats_left;
+	logic [$clog2(TIMEOUT+1)-1:0] watchdog;
+	logic [$clog2(QUARANTINE+1)-1:0] quarantine;
+	logic       expired;
 
 	// The port takes whatever is presented on the first cycle it is not busy.
 	wire accept = presented && !DDRAM_BUSY;
@@ -79,10 +108,16 @@ module ddram
 	// if that ever stops being true.
 	wire pick2 = !ch1_req && ch2_req;
 
+	// Something is outstanding: either presented and not yet taken, or taken
+	// and still owing beats. Both are waits the port can fail to end.
+	wire outstanding = presented || beats_left != 8'd0;
+
 	assign ch1_ack    = accept && !owner;
 	assign ch2_ack    = accept &&  owner;
 	assign ch1_rvalid = beat   && !owner;
 	assign ch2_rvalid = beat   &&  owner;
+	assign ch1_timeout = expired && !owner;
+	assign ch2_timeout = expired &&  owner;
 
 	always_ff @(posedge clk) begin
 		if (reset) begin
@@ -94,6 +129,9 @@ module ddram
 			// count at zero drops them, so no channel is given an rvalid for a
 			// transaction that no longer exists.
 			beats_left <= 8'd0;
+			watchdog <= '0;
+			quarantine <= '0;
+			expired <= 1'b0;
 			DDRAM_RD <= 1'b0;
 			DDRAM_WE <= 1'b0;
 			DDRAM_ADDR <= '0;
@@ -101,6 +139,26 @@ module ddram
 			DDRAM_DIN <= '0;
 			DDRAM_BE <= '0;
 		end else begin
+			expired <= 1'b0;
+
+			if (quarantine != '0)
+				quarantine <= quarantine - 1'b1;
+
+			// Restarted by any forward progress, so only a stall reaches the
+			// limit - a slow but advancing burst never does.
+			if (!outstanding || accept || beat)
+				watchdog <= '0;
+			else if (watchdog == TIMEOUT[$bits(watchdog)-1:0]) begin
+				watchdog <= '0;
+				expired <= 1'b1;
+				presented <= 1'b0;
+				beats_left <= 8'd0;
+				quarantine <= QUARANTINE[$bits(quarantine)-1:0];
+				DDRAM_RD <= 1'b0;
+				DDRAM_WE <= 1'b0;
+			end else
+				watchdog <= watchdog + 1'b1;
+
 			if (beat)
 				beats_left <= beats_left - 8'd1;
 
@@ -110,8 +168,8 @@ module ddram
 				DDRAM_WE <= 1'b0;
 				if (presented_rnw)
 					beats_left <= presented_len;
-			end else if (!presented && beats_left == 8'd0 &&
-				(ch1_req || ch2_req)) begin
+			end else if (!presented && beats_left == 8'd0 && quarantine == '0 &&
+				!expired && (ch1_req || ch2_req)) begin
 				presented <= 1'b1;
 				owner <= pick2;
 				presented_rnw <= pick2 ? ch2_rnw : ch1_rnw;

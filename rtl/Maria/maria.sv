@@ -173,12 +173,18 @@ module maria(
 			if (|men_count)
 				men_count <= men_count - 1'd1;
 
-			if (mclk0) begin
-				if (pclk1)
-					pclk <= 0;
-				else if (pclk0)
-					pclk <= 1;
-			end
+			// Follow the phase pulse itself, not the mclk0 that normally
+			// carries it. PCLK0 and PCLK1 are emitted from mclk1, so they land
+			// on the next cycle - an mclk0 cycle every time except one: the PAL
+			// bubble clears both mclk halves, and when it clears that cycle the
+			// level never follows the pulse it was given. READY and HALT are
+			// muxed on this level, so the CPU reads the phase 1 value through
+			// the whole of phase 2 and drops a PC increment. Outside a bubble
+			// this is the same cycle it always was.
+			if (pclk1)
+				pclk <= 0;
+			else if (pclk0)
+				pclk <= 1;
 
 			if (pclk0)
 				slow_clk_latch <= sel_slow_clock;

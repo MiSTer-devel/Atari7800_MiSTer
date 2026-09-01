@@ -1,7 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2019-2026 Jamie Blanks
 
-module Atari7800(
+module Atari7800 #(
+	// Firmware images for the Souper BupChip profile. Quartus reads the .mif
+	// when it builds; $readmemh reads the .hex in simulation. Both come from
+	// .agents/firmware/bupchip, installed into rtl/ by its `install` target.
+	//
+	// Never let a comment line begin with the word s-y-n-t-h-e-s-i-s: Quartus
+	// treats that as a directive and warns (10335) about whatever word comes
+	// next, so ordinary prose wrapping onto such a line becomes one. The
+	// earlier wording here did exactly that, twice per build. Enforced by
+	// .agents/tests/lint/comment_directives.py - and spelled out above rather
+	// than quoted, so this note cannot trip the thing it describes.
+	parameter BUPCHIP_ROM_MIF  = "bupchip.mif",
+	parameter BUPCHIP_ROM_INIT = "rtl/bupchip.hex"
+) (
+`ifdef BUPCHIP_FORCE_CMD
+	// Simulation only: see the BUPCHIP_FORCE_CMD block below.
+	input  logic        bupchip_force_valid,
+	input  logic  [7:0] bupchip_force_data,
+`endif
 	input  logic        clk_sys,
 	input  logic        reset,
 	input  logic        pause,
@@ -128,7 +146,6 @@ module Atari7800(
 	input              pal_wr,
 	input [7:0]        pal_data,
 	input              blend,
-	input              ar_control,
 	output [3:0]       i_read
 );
 
@@ -167,7 +184,9 @@ module Atari7800(
 	logic           mclk1;
 	logic           cs_ram0, cs_ram1, cs_tia, cs_riot, cs_maria;
 	logic [7:0]     open_bus;
-	wire            cart_read_flag, ext_audio;
+	wire            cart_read_flag, ext_audio_cart;
+	// Souper's player is an external source too, so it must halve the mix.
+	wire            ext_audio = ext_audio_cart || souper_profile;
 	logic [24:0]    cart_2600_addr_out, cart_7800_addr_out;
 	logic [7:0]     cart_2600_DB_out, cart_7800_DB_out;
 	logic           cpu_rwn;
@@ -400,8 +419,12 @@ module Atari7800(
 		.clk            (clk_sys),
 		.ce             (tia_clk_x2),     // Clock enable for CLK generation only
 		.is_7800        (~(phase_source_tia || phase_edge_source_tia)),
-		.phi0           (pclk0_t),
-		.phi1           (pclk1_t),
+		// The pins echo MARIA's pair in 7800 mode; the controller has to read
+		// the divider instead or the phase network is a combinational ring.
+		.phi0           (),
+		.phi1           (),
+		.phi0_gen       (pclk0_t),
+		.phi1_gen       (pclk1_t),
 		.phi2           (pclk0),
 		.RW_n           (RW),
 		.rdy            (tia_RDY),
@@ -427,6 +450,8 @@ module Atari7800(
 		.hgap           (tia_hblank),
 		.vsync          (tia_vsync),
 		.hsync          (tia_hsync),
+		.row            (),
+		.column         (),
 		.phi1_in        (pclk1),
 		.open_bus       (open_bus),
 		.cart_ce        (cart_ce_2600),
@@ -536,7 +561,19 @@ module Atari7800(
 
 	logic tape_audio;
 
-	wire [5:0] aud_index = audv0 + audv1;
+	// The mixer sums unsigned contributions around a midpoint, so the BupChip's
+	// signed PCM is offset into that convention. Halved along with every other
+	// external source when ext_audio is set, which is what keeps the sum from
+	// clipping when several sources sound at once.
+	// Signed two's complement into the mixer's unsigned-around-midpoint
+	// convention: inverting the sign bit is exactly the +$4000... offset, and
+	// costs one inverter instead of an adder.
+	wire [15:0] bupchip_mix_l = souper_profile ?
+		{~bupchip_audio_l[15], bupchip_audio_l[14:0]} : 16'd0;
+	wire [15:0] bupchip_mix_r = souper_profile ?
+		{~bupchip_audio_r[15], bupchip_audio_r[14:0]} : 16'd0;
+
+	wire [4:0] aud_index = audv0 + audv1;
 	wire [15:0] tia_r = (use_stereo ? audio_lut_single[audv0] : audio_lut[aud_index]);
 	wire [15:0] tia_l = (use_stereo ? audio_lut_single[audv1] : audio_lut[aud_index]);
 
@@ -546,8 +583,8 @@ module Atari7800(
 	// halved to ensure no clipping. If in the future more than two external audio devices are used
 	// at once, eg covox + ym2151 + tia, then more reduction will be needed, but for the time being
 	// that seems unlikely.
-	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + {tape_audio, 12'd0};
-	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + bupchip_mix_r + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + bupchip_mix_l + {tape_audio, 12'd0};
 
 	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
 	assign AUDIO_L = ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0];
@@ -681,8 +718,8 @@ module Atari7800(
 `ifndef NO_ARM_MAPPER
 	arm_host arm_host (
 		.clk_arm,
-		.reset_arm       (arm_reset),
-		.halt_req        (arm_halt_req),
+		.reset_arm       (arm_reset || (souper_profile && bup_hold)),
+		.halt_req        (souper_profile ? 1'b0 : arm_halt_req),
 		.halted          (arm_halted),
 		.mem_req         (arm_mem_req),
 		.mem_ready       (arm_mem_ready),
@@ -745,15 +782,20 @@ module Atari7800(
 		.ch1_ack          (arm_ddr_ack),
 		.ch1_dout         (arm_ddr_dout),
 		.ch1_rvalid       (arm_ddr_rvalid),
-		.ch2_addr         (29'b0),
-		.ch2_din          (64'b0),
-		.ch2_be           (8'b0),
-		.ch2_len          (8'd1),
-		.ch2_req          (1'b0),
-		.ch2_rnw          (1'b1),
-		.ch2_ack          (),
-		.ch2_dout         (),
-		.ch2_rvalid       ()
+		.ch2_addr         (bup_ddr_addr),
+		.ch2_din          (bup_ddr_din),
+		.ch2_be           (bup_ddr_be),
+		.ch2_len          (bup_ddr_len),
+		.ch2_req          (bup_ddr_req),
+		.ch2_rnw          (bup_ddr_rnw),
+		.ch2_ack          (bup_ddr_ack),
+		.ch2_dout         (bup_ddr_dout),
+		.ch2_rvalid       (bup_ddr_rvalid),
+		// ch1's consumer does not re-issue yet - that is
+		// Atari7800_MiSTer-4ux. The bridge still releases the port, so a stall
+		// on the ARM mapper no longer takes the BupChip down with it.
+		.ch1_timeout      (),
+		.ch2_timeout      (bup_ddr_timeout)
 	);
 
 `ifndef EXTERNAL_CARTRAM
@@ -787,8 +829,86 @@ module Atari7800(
 	assign cartram_word_data_tdp = 32'b0;
 `endif
 
+	// ---- ARM profile mux ----------------------------------------------------
+	// Decision 0040: one CPU, two exclusive clients. A Souper cartridge takes
+	// the bus for the BupChip player; everything else leaves it with the 2600
+	// call mappers exactly as before. The two never drive it together.
+	logic        arm2600_mem_req, arm2600_mem_ready, arm2600_mem_abort;
+	logic [31:0] arm2600_mem_rdata;
+	logic        bup_mem_ready, bup_mem_abort;
+	logic [31:0] bup_mem_rdata;
+	logic        bup_hold, bup_load_wait;
+	logic        cart2600_load_wait;
+	// Either consumer may stall the download; the loader honours the union.
+	assign mapper_load_wait = cart2600_load_wait || bup_load_wait;
+	logic        bup_cmd_valid;
+	logic  [7:0] bup_cmd_data;
+`ifdef BUPCHIP_FORCE_CMD
+	// Simulation only: a harness-injected command, ORed in beside the
+	// cartridge's own writes so both paths stay live.
+	wire       bup_cmd_valid_eff = bup_cmd_valid || bupchip_force_valid;
+	wire [7:0] bup_cmd_data_eff  = bup_cmd_valid ? bup_cmd_data : bupchip_force_data;
+`else
+	wire       bup_cmd_valid_eff = bup_cmd_valid;
+	wire [7:0] bup_cmd_data_eff  = bup_cmd_data;
+`endif
+	logic [15:0] bupchip_audio_l, bupchip_audio_r;
+	logic [28:0] bup_ddr_addr;
+	logic [63:0] bup_ddr_din, bup_ddr_dout;
+	logic  [7:0] bup_ddr_be, bup_ddr_len;
+	logic        bup_ddr_req, bup_ddr_rnw, bup_ddr_ack, bup_ddr_rvalid;
+	logic        bup_ddr_timeout;
+
+	// Bit 12 is the Souper mapper. tia_mode means a 2600 image, which has no
+	// A78 header and therefore no Souper flag to trust.
+	wire souper_profile = cart_flags[12] && !tia_mode;
+
+	assign arm2600_mem_req = souper_profile ? 1'b0 : arm_mem_req;
+	assign arm_mem_ready = souper_profile ? bup_mem_ready : arm2600_mem_ready;
+	assign arm_mem_abort = souper_profile ? bup_mem_abort : arm2600_mem_abort;
+	assign arm_mem_rdata = souper_profile ? bup_mem_rdata : arm2600_mem_rdata;
+
+	bupchip_subsystem #(.ROM_MIF(BUPCHIP_ROM_MIF), .ROM_INIT(BUPCHIP_ROM_INIT)) bupchip (
+		.clk_sys, .clk_arm,
+		.reset_arm      (arm_reset),
+		.enabled        (souper_profile),
+		.load_start     (mapper_load_start),
+		.load_addr      (mapper_load_addr),
+		.load_valid     (mapper_load_valid),
+		.load_data      (mapper_load_data),
+		.load_end       (mapper_load_end),
+		.asset_start    (),
+		.cmd_valid_sys  (bup_cmd_valid_eff),
+		.cmd_data_sys   (bup_cmd_data_eff),
+		.mem_req        (souper_profile ? arm_mem_req : 1'b0),
+		.mem_addr       (arm_mem_addr),
+		.mem_write      (arm_mem_write),
+		.mem_wdata      (arm_mem_wdata),
+		.mem_wstrb      (arm_mem_wstrb),
+		.mem_size       (arm_mem_size),
+		.mem_ready      (bup_mem_ready),
+		.mem_abort      (bup_mem_abort),
+		.mem_rdata      (bup_mem_rdata),
+		.arm_hold       (bup_hold),
+		.load_wait      (bup_load_wait),
+		.ddr_addr       (bup_ddr_addr),
+		.ddr_din        (bup_ddr_din),
+		.ddr_be         (bup_ddr_be),
+		.ddr_len        (bup_ddr_len),
+		.ddr_req        (bup_ddr_req),
+		.ddr_rnw        (bup_ddr_rnw),
+		.ddr_ack        (bup_ddr_ack),
+		.ddr_dout       (bup_ddr_dout),
+		.ddr_rvalid     (bup_ddr_rvalid),
+		.ddr_timeout    (bup_ddr_timeout),
+		.audio_l        (bupchip_audio_l),
+		.audio_r        (bupchip_audio_r)
+	);
+
 	cart cart
 	(
+		.aud_cmd_valid  (bup_cmd_valid),
+		.aud_cmd_data   (bup_cmd_data),
 		.clk_sys        (clk_sys),
 		.pclk0          (pclk0),
 		.pclk1          (pclk1),
@@ -823,7 +943,7 @@ module Atari7800(
 		.open_bus       (open_bus),
 		.covox_r        (covox_r),
 		.covox_l        (covox_l),
-		.external_audio (ext_audio),
+		.external_audio (ext_audio_cart),
 		.ps2_key        (ps2_key),
 		.pokey_irq_en   (pokey_irq),
 		.minnie_en      (minnie_en)
@@ -871,7 +991,7 @@ module Atari7800(
 		.load_valid     (mapper_load_valid),
 		.load_data      (mapper_load_data),
 		.load_end       (mapper_load_end),
-		.load_wait      (mapper_load_wait),
+		.load_wait      (cart2600_load_wait),
 		.mapper_ram_size,
 		.mapper_init_busy,
 		.arm_ram_en,
@@ -892,13 +1012,13 @@ module Atari7800(
 		.ddr_rvalid     (arm_ddr_rvalid),
 		.halt_req       (arm_halt_req),
 		.cpu_halted     (arm_halted),
-		.mem_req        (arm_mem_req),
-		.mem_ready      (arm_mem_ready),
-		.mem_abort      (arm_mem_abort),
+		.mem_req        (arm2600_mem_req),
+		.mem_ready      (arm2600_mem_ready),
+		.mem_abort      (arm2600_mem_abort),
 		.mem_addr       (arm_mem_addr),
 		.mem_write      (arm_mem_write),
 		.mem_wdata      (arm_mem_wdata),
-		.mem_rdata      (arm_mem_rdata),
+		.mem_rdata      (arm2600_mem_rdata),
 		.mem_size       (arm_mem_size),
 		.mem_wstrb      (arm_mem_wstrb),
 		.mem_fetch      (arm_mem_fetch),

@@ -1077,7 +1077,10 @@ module cart2600
 		.ram_sel    (ram_sel[BANKUA]),
 		.ram_rw     (ram_rw[BANKUA]),
 		.ram_a      (ram_a[BANKUA]),
-		.rom_a      (rom_addr[BANKUA])
+		.rom_a      (rom_addr[BANKUA]),
+		// UASW (Mickey) swaps the two bank-select addresses. Carried on the
+		// revision like DPC+'s stable_fractional; revision 0 is plain UA.
+		.swapped    (mapper_revision[0])
 	);
 
 	mapper_E7 mapper_E7

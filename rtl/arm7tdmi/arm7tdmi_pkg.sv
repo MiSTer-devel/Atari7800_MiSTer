@@ -120,57 +120,17 @@ package arm7tdmi_pkg;
 			ror32 = (value >> amount) | (value << (6'd32 - amount));
 	endfunction
 
-	function automatic arm_shift_t shift_immediate(
-		input logic [31:0] value,
-		input logic [1:0] shift_type,
-		input logic [4:0] amount,
-		input logic carry_in
-	);
-		arm_shift_t result;
-		logic [4:0] carry_index;
-		begin
-			result.value = value;
-			result.carry = carry_in;
-			carry_index = 5'b0 - amount;
-			case (shift_type)
-				2'b00: begin // LSL
-					if (amount != 0) begin
-						result.value = value << amount;
-						result.carry = value[carry_index];
-					end
-				end
-				2'b01: begin // LSR, zero encodes 32
-					if (amount == 0) begin
-						result.value = 32'b0;
-						result.carry = value[31];
-					end else begin
-						result.value = value >> amount;
-						result.carry = value[amount - 1'b1];
-					end
-				end
-				2'b10: begin // ASR, zero encodes 32
-					if (amount == 0) begin
-						result.value = {32{value[31]}};
-						result.carry = value[31];
-					end else begin
-						result.value = $unsigned($signed(value) >>> amount);
-						result.carry = value[amount - 1'b1];
-					end
-				end
-				default: begin // ROR, zero encodes RRX
-					if (amount == 0) begin
-						result.value = {carry_in, value[31:1]};
-						result.carry = value[0];
-					end else begin
-						result.value = ror32(value, amount);
-						result.carry = value[amount - 1'b1];
-					end
-				end
-			endcase
-			shift_immediate = result;
-		end
-	endfunction
-
+	// One rotator serves all four shift types. LSL n is a rotate by 32-n
+	// with the low n bits cleared, LSR n a rotate by n with the top n bits
+	// cleared, ASR n the same rotate with the top n bits filled from the
+	// sign, and ROR n the rotate itself - so the four parallel 32-bit
+	// shifters this used to be collapse into one ror32 and a per-bit
+	// select. Each result bit is a function of the rotated bit, the sign,
+	// the type and two thermometer tests of the amount, which is two LUT
+	// levels after the rotator instead of a fifth shifter-mux level, and a
+	// third of the area. Amounts of 32 and more only arrive from register
+	// shifts; their values and carries are the special cases DDI 0100I
+	// tabulates.
 	function automatic arm_shift_t shift_register(
 		input logic [31:0] value,
 		input logic [1:0] shift_type,
@@ -178,47 +138,47 @@ package arm7tdmi_pkg;
 		input logic carry_in
 	);
 		arm_shift_t result;
-		logic [4:0] rotate;
-		logic [4:0] carry_index;
+		logic [4:0] amt5, rot, carry_index;
+		logic [31:0] rotated;
+		logic ge32, eq32, is_left, sign, low_live, high_live;
 		begin
-			result.value = value;
-			result.carry = carry_in;
-			rotate = amount[4:0];
-			carry_index = 5'b0 - amount[4:0];
-			if (amount != 0) begin
+			amt5 = amount[4:0];
+			ge32 = |amount[7:5];
+			eq32 = (amount == 8'd32);
+			is_left = (shift_type == 2'b00);
+			sign = value[31];
+			rot = is_left ? (5'd0 - amt5) : amt5;
+			rotated = ror32(value, rot);
+
+			if (amount == 0) begin
+				result.value = value;
+				result.carry = carry_in;
+			end else begin
+				carry_index = is_left ? (5'd0 - amt5) : (amt5 - 5'd1);
 				case (shift_type)
-					2'b00: begin
-						if (amount < 32) begin
-							result.value = value << amount;
-							result.carry = value[carry_index];
-						end else begin
-							result.value = 32'b0;
-							result.carry = (amount == 32) ? value[0] : 1'b0;
-						end
-					end
-					2'b01: begin
-						if (amount < 32) begin
-							result.value = value >> amount;
-							result.carry = value[amount[4:0] - 1'b1];
-						end else begin
-							result.value = 32'b0;
-							result.carry = (amount == 32) ? value[31] : 1'b0;
-						end
-					end
-					2'b10: begin
-						if (amount < 32) begin
-							result.value = $unsigned($signed(value) >>> amount);
-							result.carry = value[amount[4:0] - 1'b1];
-						end else begin
-							result.value = {32{value[31]}};
-							result.carry = value[31];
-						end
-					end
-					default: begin
-						result.value = ror32(value, rotate);
-						result.carry = (rotate == 0) ? value[31] : value[rotate - 1'b1];
-					end
+					2'b00: result.carry = eq32 ? value[0] :
+						(ge32 ? 1'b0 : value[carry_index]);
+					2'b01: result.carry = eq32 ? value[31] :
+						(ge32 ? 1'b0 : value[carry_index]);
+					2'b10: result.carry = ge32 ? value[31] : value[carry_index];
+					default: result.carry = (amt5 == 0) ? value[31] :
+						value[carry_index];
 				endcase
+				for (int i = 0; i < 32; i++) begin
+					// Live below 32-n (right shifts keep the low bits) and
+					// at or above n (a left shift keeps the high bits).
+					low_live = ({1'b0, 5'(i)} + {1'b0, amt5}) < 6'd32;
+					high_live = 5'(i) >= amt5;
+					case (shift_type)
+						2'b00: result.value[i] =
+							(!ge32 && high_live) ? rotated[i] : 1'b0;
+						2'b01: result.value[i] =
+							(!ge32 && low_live) ? rotated[i] : 1'b0;
+						2'b10: result.value[i] =
+							(ge32 || !low_live) ? sign : rotated[i];
+						default: result.value[i] = rotated[i];
+					endcase
+				end
 			end
 			shift_register = result;
 		end

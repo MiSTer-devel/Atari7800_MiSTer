@@ -187,6 +187,16 @@ module sr_latch
 endmodule
 
 /////////////////////////////////////////////////////////////////////////////////////////
+// The die's F cell is two cross coupled latch stages gated by opposite halves
+// of tick. Both stages are transparent only while their own half is high, so
+// the pair collapses to two registers with no path from r_n/s_n to q:
+//
+//   tick low   master follows s_n / r_n     q = slave
+//   tick high  master holds                 q = ~master, slave <= ~master
+//
+// This is the same cycle for cycle behaviour the two sr_latch instances gave,
+// written so a cross coupled pair of cells is no longer a combinational loop
+// for Verilator and TimeQuest.
 module f_cell
 (
 	input  logic   clk,
@@ -197,27 +207,22 @@ module f_cell
 	output logic   q_n,
 	output logic   q
 );
-	logic q_in, qn_in;
+	logic master, slave;
 
-	sr_latch in_sr
-	(
-		.clk        (clk),
-		.reset      (reset),
-		.r          (~(tick || s_n)),
-		.s          (~(tick || r_n) || reset),
-		.q          (q_in),
-		.q_n        (qn_in)
-	);
+	assign q   = reset ? 1'd0 : (tick ? ~master : slave);
+	assign q_n = ~q;
 
-	sr_latch out_sr
-	(
-		.clk        (clk),
-		.reset      (reset),
-		.r          ((q_in && tick) || reset),
-		.s          (qn_in && tick),
-		.q          (q),
-		.q_n        (q_n)
-	);
+	always @(posedge clk) begin
+		if (tick)
+			slave  <= ~master;
+		else
+			master <= ~s_n ? 1'd0 : (~r_n ? 1'd1 : master);
+
+		if (reset) begin
+			master <= 1'd0;
+			slave  <= 1'd0;
+		end
+	end
 
 endmodule
 
@@ -467,7 +472,13 @@ module clockgen
 	output clock_t pclk, // CPU clock
 	output clock_t hclk, // Horizontal clock
 	output clock_t oclk,  // Oscillator Clock
-	output logic   phi0_ll
+	output logic   phi0_ll,
+	// The divider's own edges. Same as pclk.edge_p* in 2600 mode; in 7800 mode
+	// pclk follows pext_* and these do not. Every term below is a register, so
+	// there is no path from pext_* to here - which is what breaks the
+	// pext -> pclk -> phase controller -> pext ring. See the TIA phi*_gen pins.
+	output logic   pclk_gen_edge_p1,
+	output logic   pclk_gen_edge_p2
 );
 
 parameter PHI2_EXT = 0;
@@ -481,16 +492,24 @@ parameter PHI2_EXT = 0;
 logic oclk_tog;
 logic [2:0] pclk_div;
 logic pclock;
+// Held outside the struct: a clock_t is one signal to the linter, so a field
+// derived from another field of the same struct reads as a loop.
+logic oclk_clock, pclk_clock;
 wire pclk_edge = (oclk.edge_p1 || oclk.edge_p2);
 assign oclk.edge_p2 = oclk_tog && ce;
 assign oclk.edge_p1 = ~oclk_tog && ce;
-assign oclk.level_p1 = ~oclk.clock;
-assign oclk.level_p2 = oclk.clock;
+assign oclk.clock    = oclk_clock;
+assign oclk.level_p1 = ~oclk_clock;
+assign oclk.level_p2 = oclk_clock;
 
-assign pclk.edge_p2 = ((is_7800 || PHI2_EXT) ? pext_2 : (pclk_div == 2) && pclk_edge) && ~pclk.clock; // Phi0 // 0
-assign pclk.edge_p1 = (is_7800 ? pext_1 : (pclk_div == 5 || (resp0 && pclk_div == 0)) && pclk_edge) && pclk.clock; // Phi1 // 1
-assign pclk.level_p1 = ~pclk.clock;
-assign pclk.level_p2 = pclk.clock;
+assign pclk_gen_edge_p2 = ((pclk_div == 2) && pclk_edge) && ~pclk_clock;
+assign pclk_gen_edge_p1 = ((pclk_div == 5 || (resp0 && pclk_div == 0)) && pclk_edge) && pclk_clock;
+
+assign pclk.edge_p2 = (is_7800 || PHI2_EXT) ? (pext_2 && ~pclk_clock) : pclk_gen_edge_p2; // Phi0 // 0
+assign pclk.edge_p1 = is_7800 ? (pext_1 && pclk_clock) : pclk_gen_edge_p1; // Phi1 // 1
+assign pclk.clock    = pclk_clock;
+assign pclk.level_p1 = ~pclk_clock;
+assign pclk.level_p2 = pclk_clock;
 
 clock_t hclk_ll, hclk_hl;
 
@@ -502,6 +521,7 @@ f_counter hclk_counter
 	.tick       (oclk.edge_p2),
 	.clock      (hclk),
 	.f1_qn      (),
+	.f1_qn_edge (),
 	.f1_q_l     (rsynl)
 );
 
@@ -527,9 +547,9 @@ always_ff @(posedge clk) begin : phi0_gen
 	end
 
 	if (oclk.edge_p2) begin
-		oclk.clock <= 1;
+		oclk_clock <= 1;
 	end else if (oclk.edge_p1) begin
-		oclk.clock <= 0;
+		oclk_clock <= 0;
 	end
 
 	// CPU Clock
@@ -538,9 +558,9 @@ always_ff @(posedge clk) begin : phi0_gen
 	end
 
 	if (pclk.edge_p2)
-		pclk.clock <= 1'b1;
+		pclk_clock <= 1'b1;
 	else if (pclk.edge_p1)
-		pclk.clock <= 1'b0;
+		pclk_clock <= 1'b0;
 
 	if (hclk.edge_p2 && rsynd) begin
 		pclk_div <= 3'd2;
@@ -549,8 +569,8 @@ always_ff @(posedge clk) begin : phi0_gen
 	if (reset) begin
 		pclk_div <= 3'd4;
 		oclk_tog <= 0;
-		oclk.clock <= '0;
-		pclk.clock  <= 0;
+		oclk_clock <= '0;
+		pclk_clock <= 0;
 	end
 end
 
@@ -1313,7 +1333,6 @@ endmodule
 module priority_encoder
 (
 	input           clk,
-	input           ce,
 	input           p0,
 	input           m0,
 	input           p1,
@@ -1321,7 +1340,6 @@ module priority_encoder
 	input           pf,
 	input           bl,
 	input           blank,
-	input           decomb,
 	input           cntd,
 	input           pfp,
 	input           score,
@@ -1381,7 +1399,6 @@ module audio_channel
 (
 	input           clk,
 	input           reset,
-	input           ce,
 	input           aud0,
 	input           aud1,
 	input  [3:0]    volume,
@@ -1692,6 +1709,15 @@ module TIA
 	output          vsync,
 	output          hsync,
 	input           phi1_in,
+	// phi0/phi1 above are the chip's pins: in 7800 mode they echo the pair
+	// MARIA supplies, which is what the silicon does and what
+	// tia_clock_boundary_tb guards. Feeding that echo back to the core's phase
+	// controller closes a combinational ring, so the controller reads these
+	// instead - the divider's own phase, with no path from phi1_in/phi2. In
+	// 2600 mode, the only mode the controller selects the TIA in, they are the
+	// same signals.
+	output          phi0_gen,
+	output logic    phi1_gen,
 	input [7:0]     open_bus,
 	input           is_7800,
 	input           decomb,
@@ -1921,7 +1947,10 @@ clockgen clockgen
 	.pext_2     (phi2),
 	.pclk       (pclk),
 	.hclk       (hclk),
-	.oclk       (oclk)
+	.oclk       (oclk),
+	.phi0_ll    (),  // reference divider, tied off - see clockgen
+	.pclk_gen_edge_p1 (phi1_gen),
+	.pclk_gen_edge_p2 (phi0_gen)
 );
 
 horiz_gen h_gen
@@ -1940,7 +1969,8 @@ horiz_gen h_gen
 	.aud0       (aclk0),
 	.aud1       (aclk1),
 	.shb        (shb),
-	.rhb        (rhb)
+	.rhb        (rhb),
+	.CB         ()   // colour burst gate, unused outside horiz_gen
 );
 
 playfield playfield
@@ -2072,9 +2102,9 @@ audio_channel audio0
 	.reset      (rst),
 	.aud0       (aclk0),
 	.aud1       (aclk1),
-	.volume     (wreg[AUDV0]),
-	.freq       (wreg[AUDF0]),
-	.audc       (wreg[AUDC0]),
+	.volume     (wreg[AUDV0][3:0]),
+	.freq       (wreg[AUDF0][4:0]),
+	.audc       (wreg[AUDC0][3:0]),
 	.audio      (aud0)
 );
 
@@ -2084,9 +2114,9 @@ audio_channel audio1
 	.reset      (rst),
 	.aud0       (aclk0),
 	.aud1       (aclk1),
-	.volume     (wreg[AUDV1]),
-	.freq       (wreg[AUDF1]),
-	.audc       (wreg[AUDC1]),
+	.volume     (wreg[AUDV1][3:0]),
+	.freq       (wreg[AUDF1][4:0]),
+	.audc       (wreg[AUDC1][3:0]),
 	.audio      (aud1)
 );
 

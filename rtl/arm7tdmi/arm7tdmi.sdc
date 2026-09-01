@@ -32,35 +32,63 @@
 #
 # arm7tdmi_core has no multi-cycle paths worth constraining. Every state that
 # looks multi-cycle from the outside re-launches from registers on each clk_arm
-# edge, so the logic between registers is always one cycle:
+# edge, so the logic between registers is always one cycle. Rewritten after the
+# 2026-08-31 restructure (decisions 0002 and 0004, CHANGES.md items 1-18),
+# because the structures the previous text described are gone:
 #
-#   MUL_WAIT      multiply_result is captured in a single edge, out of the
-#                 32x32 -> 64 multiplier plus its sign correction and 64-bit
-#                 accumulate. multiply_wait then counts the architectural
-#                 cycles the real part spends, but it can be as low as 1, so
-#                 the result is read the very next edge. The multiplier is a
-#                 hard single-cycle path and only RTL can change that.
+#   MUL_WAIT      The multiplier walks eight multiplier bits per edge: one
+#                 32x8 product and a 64-bit add from the iteration registers,
+#                 with group 0 folded into the entry edge from the execute
+#                 registers. The carry-save walk beside it is the same shape.
+#                 The retire edge reads only registers (mul_acc, mc_carry),
+#                 so the multiplier is never on the forwarding loop - the fit
+#                 that briefly had it there measured -3.841 ns, the campaign's
+#                 low. The old single-edge 32x32 product no longer exists.
 #   MEM_ACCESS    entered and finished on consecutive edges when the memory
-#                 answers in its request cycle, which it does for a cache hit
-#                 or a held-line fetch.
-#   BLOCK_ACCESS  one transfer per edge; a one-register LDM enters and leaves
-#                 on consecutive edges.
+#                 answers in its request cycle; loads then spend one MEM_DONE
+#                 edge (the manual's trailing I cycle) before resuming.
+#   BLOCK_ACCESS  one transfer per edge. The next list position is registered
+#                 a cycle ahead (block_next_index, block_rest); the comb
+#                 isolate that computes it lands in registers only.
 #   HALTED        the state port is a level handshake. state_ready is asserted
 #                 in the same edge the core sees state_req, and the controller
 #                 moves state_index on the next, so index -> state_rdata is one
-#                 cycle.
+#                 cycle. The register file is flat (rf[0:29], laid out as the
+#                 state map), so there is no bank capture on halt either.
 #
-# The only paths inside the core that are structurally longer than one cycle
-# are swp_resume_pc and swp_rd, which SWP_READ holds across into SWP_WRITE.
-# They are two 32-bit values feeding an adder and a compare, nowhere near the
-# critical path, so constraining them would be noise.
+# Registers that are structurally held across more than one edge - the resume
+# PCs (data_resume_pc, swp_resume_pc, block_resume_pc, multiply_resume_pc,
+# mem_done_pc), the transfer descriptors (data_*, swp_*, block_*), and the
+# iteration state - feed adders, compares and muxes nowhere near the critical
+# path. Constraining them would be noise, and it would also be wrong for the
+# one-register cases (a one-register LDM, an m=1 multiply) that do read them
+# on the very next edge.
 #
-# The core's real problem is not a missing multi-cycle. It is that
-# arm_mapper_memory answers combinationally - mem_ready and mem_rdata are
-# driven straight out of the address-phase decode with nothing registered on
-# the way - so the mapper's whole memory-map decode sits in series with the
+# Where the core's own worst path is, measured standalone at 71.59 MHz on the
+# probe (single seeds, 2026-08-31, evidence/arm7tdmi-restructure-fits.md):
+# the dependent-instruction operand loop - a forwarded ALU result through the
+# forward select, the operand select, the rotator-based shifter and the ALU
+# again inside one edge - at -0.81 to -0.89 ns, with the launch nodes that
+# each fit named (the block-walk isolate, the read-port index mux, the bus
+# qualifiers on the forwarding valid) retired one by one. What remains is the
+# loop itself, and it is one cycle by definition: nothing in it is a
+# candidate for a multicycle.
+#
+# Names, for anyone matching registers from a revision SDC or QSF: the
+# register file is `rf`, not `regs` and the six bank arrays; the fetch
+# counter is `fetch_pc`, not `next_fetch_pc`; the block list is `block_rest`.
+# Nothing in this file or the parent's ever named them, so no exception
+# silently went stale - but check before assuming.
+#
+# The core's real integration problem is not a missing multi-cycle. It is
+# that arm_mapper_memory answers combinationally - mem_ready and mem_rdata
+# are driven straight out of the address-phase decode with nothing registered
+# on the way - so the mapper's whole memory-map decode sits in series with the
 # core's decode, operand mux and barrel shifter inside one clk_arm period.
-# That is where the worst clk_arm path lives, and it needs RTL, not SDC.
+# The 2026-08-31 restructure took mem_ready off the forwarding valid inside
+# the core (a forward computed on a non-completing cycle is discarded, so the
+# qualifier was never needed), which shortens that series path by the bus
+# qualifier's share; the mapper's decode itself still needs RTL, not SDC.
 #
 #
 # WHAT DOES NEED CONSTRAINING: THE CARTRIDGE SELECTION
@@ -71,6 +99,28 @@
 #   hps_io|status[60:56]      OSD "bankswitch scheme" override
 #   use_tape                  Supercharger tape mode
 #   detect2600|force_bs[*]    scheme detected while the ROM downloaded
+#   cart_is_7800              set from the ROM header at Atari7800.sv:587
+#   a78_cart_extent|*         cartridge size from the download and the header
+#
+# cart_is_7800 was added after that measurement. It selects the 2600 mapper at
+# Atari7800.sv:366 and so lands in the same decode cone; on the 2026-08-30 fit
+# it launched all five worst clk_arm paths, -4.027 to -3.978 ns. It is the same
+# class as the other three - written once while the ROM downloads, never read
+# in a known cycle.
+#
+# a78_cart_extent arrived the same way and was missed the same way. On the
+# 2026-08-31 09:20 fit cart_size_eof launched every one of the hundred worst
+# clk_arm paths, -3.744 ns at the top and TNS -2476 ns, which buried whatever
+# else clk_arm was failing. It sizes the cartridge from the download, so it is
+# the same class again: it stops changing when the ROM finishes loading, and
+# the ARM is in reset until after that.
+#
+# It is matched by instance and not by register name, unlike the four above,
+# because physical synthesis retimed registers into its comparators and named
+# them itself - LessThan1~3_OTERM7878 and 74 more. Naming cart_size_eof and
+# hcart_size cut only -3.744 to -3.491; the retimed copies became the new worst
+# paths. A name the fitter invents cannot be written down in advance, so the
+# exception has to cover the instance.
 #
 # Atari7800.sv:367 combines these into `mapper`, cart2600 turns that into the
 # ARM's memory map and mapper_ram_size, and arm_mapper_memory reads it in the
@@ -106,11 +156,16 @@ if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|genera
 	# A multicycle would be safe if you wanted one. `-setup N -hold N-1` leaves
 	# the hold check on the launch edge, same as an unconstrained path - measured
 	# on this design, see decision 0073.
-	set arm7_config [add_to_collection \
-		[get_registers -nowarn {*hps_io:*|status[*]}] \
-		[add_to_collection \
-			[get_registers -nowarn {*|use_tape*}] \
-			[get_registers -nowarn {*detect2600:*|force_bs[*]}]]]
+	set arm7_config [get_registers -nowarn {*hps_io:*|status[*]}]
+	foreach arm7_pattern {
+		*|use_tape*
+		*detect2600:*|force_bs[*]
+		*|cart_is_7800*
+		*a78_cart_extent:*
+	} {
+		set arm7_config [add_to_collection $arm7_config \
+			[get_registers -nowarn $arm7_pattern]]
+	}
 
 	if {[get_collection_size $arm7_config] > 0} {
 		# Scoping -to the clock and not to a register list leaves these signals
@@ -129,5 +184,5 @@ if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|genera
 	# *_sync1 would let the toggle route arbitrarily fast while the payload
 	# stays bounded, which inverts the order the handshake depends on.
 
-	unset arm7_clk_arm arm7_config
+	unset arm7_clk_arm arm7_config arm7_pattern
 }
