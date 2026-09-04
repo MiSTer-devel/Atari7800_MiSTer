@@ -239,8 +239,10 @@ module mapper_3F
 	logic [7:0] bank;
 	wire [7:0] current_bank = ~a_in[11] ? bank : 8'hFF;
 
+	// Any write below $0040 sets the bank. That overlaps the TIA, so these
+	// carts use the TIA mirror at $40-$7F for everything else.
 	always @(posedge clk) begin
-		if (a_in == 13'h3F)
+		if (~|a_in[12:6])
 			bank <= d_in;
 
 		if (reset)
@@ -329,7 +331,7 @@ module mapper_P2
 	logic [15:0] music_clock;
 	logic [18:0] rom_a_next;
 
-	wire [7:0] amplitude_lut[8] = '{8'h0F, 8'h0B, 8'h0A, 8'h06, 8'h09, 8'h05, 8'h04, 8'h00};
+	wire [7:0] amplitude_lut[8] = '{8'h00, 8'h04, 8'h05, 8'h09, 8'h06, 8'h0A, 8'h0B, 8'h0F};
 	wire [7:0] rom_do_i = ~|dpc_addr ? (~music_en ? rand_val : amplitude_lut[music_amp_index]) :
 		((dpc_addr == 3'd7 || dpc_addr == 3'd2) ? flags[index] : 8'd0);
 
@@ -366,7 +368,7 @@ module mapper_P2
 				rand_val <= {rand_val[6:0], ~(rand_val[7] ^ rand_val[5] ^ rand_val[4] ^ rand_val[3])};
 				if (is_dpc) begin
 					if (dpc_rw) begin // read
-						if (index < 5 || (index >= 5 && music_modes[ain_minus_5[1:0]])) begin
+						if (index < 5 || !music_modes[ain_minus_5[1:0]]) begin
 							counters[index] <= counters[index] - 1'd1;
 						end
 
@@ -377,15 +379,17 @@ module mapper_P2
 						end
 					end else begin // Write
 						case (dpc_addr)
+							// A top write resets the flag. The comparator sets it
+							// again on the next read if the counter is still there.
 							3'h0: begin
 								tops[index] <= d_in;
-								if (counters[index][7:0] == d_in)
-									flags[index] <= 8'hFF;
-								else
-									flags[index] <= 8'h00;
+								flags[index] <= 8'h00;
 							end
 							3'h1: bottoms[index] <= d_in;
-							3'h2: counters[index][7:0] <= d_in;
+							// In music mode the counter reloads from the top register
+							// rather than taking the written value.
+							3'h2: counters[index][7:0] <= (index >= 3'd5 && music_modes[ain_minus_5[1:0]]) ?
+								tops[index] : d_in;
 							3'h3: begin
 								counters[index][10:8] <= d_in[2:0];
 								if (index >= 3'd5)
@@ -412,9 +416,12 @@ module mapper_P2
 				music_clock <= music_clock + 1'd1;
 				// music_rem[v] is music_clock % (tops[v + 5] + 1), settled by
 				// the modulo engine below.
-				flags[5] <= (music_rem[0] > bottoms[5]) ? 8'hFF : 8'h00;
-				flags[6] <= (music_rem[1] > bottoms[6]) ? 8'hFF : 8'h00;
-				flags[7] <= (music_rem[2] > bottoms[7]) ? 8'hFF : 8'h00;
+				if (music_modes[0])
+					flags[5] <= (music_rem[0] > bottoms[5]) ? 8'hFF : 8'h00;
+				if (music_modes[1])
+					flags[6] <= (music_rem[1] > bottoms[6]) ? 8'hFF : 8'h00;
+				if (music_modes[2])
+					flags[7] <= (music_rem[2] > bottoms[7]) ? 8'hFF : 8'h00;
 			end
 		end
 		if (reset) begin
@@ -488,6 +495,135 @@ module mapper_P2
 			mod_num   <= 16'd0;
 			mod_rem   <= '{3{8'd0}};
 			music_rem <= '{3{8'd0}};
+		end
+	end
+
+endmodule
+
+// Chetiry's mapper. Seven 4K banks at $1FF5-$1FFB; bank 0 is Harmony driver
+// code the 6507 never sees, so $1FF4 is not a bank hotspot - it runs a flash
+// operation instead and answers busy/ready in bit 6 of the byte it returns.
+//
+// 64 bytes of RAM sit behind $1000-$107F, write port low, read port high, with
+// four registers overlaid at each end:
+//
+//   write $1000 operation type   read $1040 error code
+//   write $1001 reset the LFSR   read $1041 next random byte
+//   write $1002 rewind the tune  read $1042 tune position low
+//   write $1003 advance the tune read $1043 tune position high
+//
+// The music itself is not here. Its frequency table lives in the Harmony
+// driver rather than the ROM, so a voice needs that table hardcoded and a
+// fetcher for the note stream past 32K; until then the LDA #$F2 operand alias
+// that carries the mixed amplitude is left alone and the CPU reads the literal
+// $F2. Nothing else depends on it. The flash operations answer the handshake
+// without moving any data, so score tables read back as whatever the cartridge
+// RAM already held.
+module mapper_CTY
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [17:0]  ram_a,
+	output  [18:0]  rom_a,
+	// Special
+	input           ce,        // 3.579 mhz
+	input   [7:0]   rom_do
+);
+	// What the Harmony's flash costs: half a second to read, one to write.
+	localparam [21:0] READ_DELAY  = 22'd1789772;
+	localparam [21:0] WRITE_DELAY = 22'd3579545;
+
+	logic [2:0]  bank;
+	logic [7:0]  operation;
+	logic [7:0]  error_code;
+	logic [31:0] random;
+	logic [15:0] tune_pos;
+	logic        busy;
+	logic [21:0] busy_timer;
+
+	wire [5:0] index      = a_in[5:0];
+	wire       is_ram     = a_in[12] && ~|a_in[11:7];   // $1000-$107F
+	wire       write_port = is_ram && ~a_in[6];
+	wire       read_port  = is_ram && a_in[6];
+	wire       is_reg     = ~|index[5:2];               // the low four of either port
+	wire       flash_sel  = a_in == 13'h1FF4;
+
+	// Rotate right by eleven, and fold in a constant when the bit falling off
+	// the end was set.
+	wire [31:0] random_next = {random[10:0], random[31:11]} ^
+		(random[10] ? 32'h10ADAB1E : 32'd0);
+
+	logic [7:0] reg_do;
+	always_comb begin
+		case (index[1:0])
+			2'd0: reg_do = error_code;
+			2'd1: reg_do = random_next[7:0];
+			2'd2: reg_do = tune_pos[7:0];
+			2'd3: reg_do = tune_pos[15:8];
+		endcase
+	end
+
+	assign flags_out = {15'd0, flash_sel || (read_port && is_reg)};
+	assign d_out = flash_sel ? (busy ? (rom_do | 8'h40) : (rom_do & 8'hBF)) : reg_do;
+	assign oe = a_in[12] ? (write_port ? 8'h00 : 8'hFF) : 8'h00;
+	assign ram_sel = is_ram && ~is_reg;
+	assign ram_rw = read_port;
+	assign ram_a = {12'd0, index};
+	assign rom_a = {4'd0, bank, a_in[11:0]};
+
+	always @(posedge clk) begin
+		if (ce && |busy_timer)
+			busy_timer <= busy_timer - 1'd1;
+
+		if (a_change) begin
+			if (a_in[12:4] == 9'h1FF && a_in[3:0] >= 4'h5 && a_in[3:0] <= 4'hB)
+				bank <= a_in[3:0] - 4'd4;
+
+			// A flash operation answers busy on the access that starts it and
+			// stays busy until a later access finds the timer run down.
+			if (flash_sel) begin
+				if (~busy) begin
+					busy <= 1'b1;
+					busy_timer <= (operation[3:0] == 4'd3 || operation[3:0] == 4'd4) ?
+						WRITE_DELAY : READ_DELAY;
+				end else if (~|busy_timer) begin
+					busy <= 1'b0;
+					error_code <= 8'h00; // the operation succeeded
+				end
+			end
+
+			// The cartridge cannot see the 6507's R/W, so an access to the
+			// write port is a write however the CPU meant it.
+			if (write_port && is_reg) begin
+				case (index[1:0])
+					2'd0: operation <= d_in;
+					2'd1: random <= 32'h2B435044;
+					2'd2: tune_pos <= 16'd0;
+					2'd3: tune_pos <= tune_pos + 1'd1;
+				endcase
+			end
+
+			if (read_port && is_reg && index[1:0] == 2'd1)
+				random <= random_next;
+		end
+
+		if (reset) begin
+			bank <= 3'd1;
+			operation <= 8'd0;
+			error_code <= 8'hFF;
+			random <= 32'h2B435044;
+			tune_pos <= 16'd0;
+			busy <= 1'b0;
+			busy_timer <= 22'd0;
 		end
 	end
 
@@ -676,8 +812,10 @@ module mapper_E7
 					ram_bank <= a_in[1:0];
 			end
 		end
-		if (reset)
+		if (reset) begin
 			bank <= 0;
+			ram_bank <= 0;
+		end
 	end
 
 endmodule
@@ -1103,7 +1241,9 @@ module mapper_WD
 	output          ram_sel,
 	output          ram_rw,
 	output  [17:0]  ram_a,
-	output  [18:0]  rom_a
+	output  [18:0]  rom_a,
+	// special
+	input           swapped // 8195-byte dumps have 1K banks 2 and 3 swapped
 );
 	logic [2:0] bank_config;
 	logic [3:0] pending_switch;
@@ -1120,8 +1260,10 @@ module mapper_WD
 	assign bank_lut[6] = '{3'd2, 3'd3, 3'd4, 3'd5};
 	assign bank_lut[7] = '{3'd6, 3'd0, 3'd5, 3'd1};
 	
-	logic [2:0] bank_out;
-	assign bank_out = banks[a_in[11:10]];
+	logic [2:0] bank_raw, bank_out;
+	assign bank_raw = banks[a_in[11:10]];
+	// A swapped dump stores bank 2 where bank 3 belongs and vice versa.
+	assign bank_out = (swapped && bank_raw[2:1] == 2'b01) ? {bank_raw[2:1], ~bank_raw[0]} : bank_raw;
 	
 	assign flags_out = 16'd0;
 	assign d_out = 8'd0;
@@ -1350,3 +1492,215 @@ endmodule
 	// Byte 96-103: padding
 	// Byte 104-127: 24 bytes of checksums for each page of the 6kb of data.
 	// The rest is padding.
+
+// 0840 "Econobanking": two 4K banks picked by reading $0800 or $0840. Only
+// A12, A11 and A6 are decoded, so every mirror of those addresses works too.
+module mapper_0840
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [17:0]  ram_a,
+	output  [18:0]  rom_a
+);
+	assign flags_out = 16'd0;
+	assign d_out = 8'd0;
+	assign oe = a_in[12] ? 8'hFF : 8'h00;
+	assign ram_sel = 1'd0;
+	assign ram_a = 18'd0;
+	assign ram_rw = 1'd1;
+
+	logic bank;
+
+	always @(posedge clk) begin
+		if (a_change && a_in[12:11] == 2'b01)
+			bank <= a_in[6];
+		if (reset)
+			bank <= 0;
+	end
+
+	assign rom_a = {6'd0, bank, a_in[11:0]};
+
+endmodule
+
+// FC, the Amiga Power Play Arcade albums: up to eight 4K banks. A write to
+// $FF8 gives the low two bits of the next bank and a write to $FF9 the rest;
+// any access to $FFC then switches. When the $FF9 value alone reaches past
+// the last bank it is taken as the whole bank number, which is how a program
+// that writes the same value to both registers still lands on that bank.
+module mapper_FC
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [17:0]  ram_a,
+	output  [18:0]  rom_a,
+	// special
+	input   [31:0]  rom_size
+);
+	assign flags_out = 16'd0;
+	assign d_out = 8'd0;
+	assign oe = a_in[12] ? 8'hFF : 8'h00;
+	assign ram_sel = 1'd0;
+	assign ram_a = 18'd0;
+	assign ram_rw = 1'd1;
+
+	logic [2:0] bank;
+	logic [1:0] lo;
+	logic [7:0] hi;
+	wire  [2:0] last_bank = rom_size[14:12] - 1'd1;   // 4K..32K images
+	wire        hi_fits = {hi[5:0], 2'b00} <= {5'd0, last_bank};
+	wire  [2:0] target = (hi_fits ? {hi[0], lo} : hi[2:0]) & last_bank;
+
+	// The data bus settles late in the cycle, so the registers follow it for
+	// as long as the address sits on the hotspot and keep the final value.
+	always @(posedge clk) begin
+		if (a_in == 13'h1FF8)
+			lo <= d_in[1:0];
+		if (a_in == 13'h1FF9)
+			hi <= d_in;
+		if (a_change && a_in == 13'h1FFC)
+			bank <= target;
+		if (reset) begin
+			bank <= 0;
+			lo <= 0;
+			hi <= 0;
+		end
+	end
+
+	assign rom_a = {4'd0, bank, a_in[11:0]};
+
+endmodule
+
+// DF (128K, 32 banks, hotspots $FC0-$FDF) and BF (256K, 64 banks, hotspots
+// $F80-$FBF). Same board family as EF; the image size says which one.
+module mapper_DF
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [17:0]  ram_a,
+	output  [18:0]  rom_a,
+	// special
+	input           big  // 256K image: BF rather than DF
+);
+	assign flags_out = 16'd0;
+	assign d_out = 8'd0;
+	assign oe = a_in[12] ? (~ram_rw && ram_sel ? 8'h00 : 8'hFF) : 8'h00;
+	assign ram_sel = sc ? (a_in[12:8] == 5'b10000) : 1'd0;
+	assign ram_a = sc ? {11'd0, a_in[6:0]} : 18'd0;
+	assign ram_rw = sc ? a_in[7] : 1'd1;
+
+	logic [5:0] bank;
+
+	always @(posedge clk) begin
+		if (a_change) begin
+			if (big && a_in[12:6] == 7'h7E)
+				bank <= a_in[5:0];
+			if (!big && a_in[12:5] == 8'hFE)
+				bank <= {1'b0, a_in[4:0]};
+		end
+		if (reset)
+			bank <= big ? 6'd1 : 6'd15;
+	end
+
+	assign rom_a = {1'b0, bank, a_in[11:0]};
+
+endmodule
+
+// Multicarts: N games of one size packed back to back. Like the Atari 32-in-1,
+// every power cycle moves to the next game: the counter clears when an image
+// loads and advances on each reset after that. SLICE 0 is 2K games, 1 is 4K
+// games, 2 is 8K games that bankswitch like F8.
+module mapper_MC #(parameter SLICE = 0)
+(
+	input           clk,
+	input           reset,
+	input           a_change,
+	input           sc,
+	input   [12:0]  a_in,
+	input   [7:0]   d_in,
+	output  [7:0]   d_out,
+	output  [15:0]  flags_out,
+	output  [7:0]   oe,
+	output          ram_sel,
+	output          ram_rw,
+	output  [17:0]  ram_a,
+	output  [18:0]  rom_a,
+	// special
+	input           load_start,
+	input   [31:0]  rom_size
+);
+	assign flags_out = 16'd0;
+	assign d_out = 8'd0;
+	assign oe = a_in[12] ? 8'hFF : 8'h00;
+	assign ram_sel = 1'd0;
+	assign ram_a = 18'd0;
+	assign ram_rw = 1'd1;
+
+	logic [7:0] game;
+	logic       bank;
+	logic       reset_d, armed;
+	wire  [7:0] last_game = (SLICE == 0 ? rom_size[18:11] :
+	                         SLICE == 1 ? rom_size[19:12] : rom_size[20:13]) - 1'd1;
+
+	// The load itself holds reset high; the first falling edge after the load
+	// arms the counter so only later resets count.
+	always @(posedge clk) begin
+		reset_d <= reset;
+		if (load_start) begin
+			game <= 0;
+			armed <= 0;
+		end else begin
+			if (reset_d && !reset)
+				armed <= 1;
+			if (reset && !reset_d && armed)
+				game <= (game + 1'd1) & last_game;
+		end
+
+		if (a_change) begin
+			case (a_in)
+				13'h1FF8: bank <= 0;
+				13'h1FF9: bank <= 1;
+				default: ;
+			endcase
+		end
+		if (reset)
+			bank <= 1;
+	end
+
+	generate
+		if (SLICE == 0) begin : slice_2k
+			assign rom_a = {game, a_in[10:0]};
+		end else if (SLICE == 1) begin : slice_4k
+			assign rom_a = {game[6:0], a_in[11:0]};
+		end else begin : slice_8k
+			assign rom_a = {game[5:0], bank, a_in[11:0]};
+		end
+	endgenerate
+
+endmodule

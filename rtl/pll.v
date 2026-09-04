@@ -12,7 +12,13 @@ module pll (
 		output wire  outclk_1, // outclk1.clk
 		output wire  outclk_2, // outclk2.clk
 		output wire  outclk_3, // outclk3.clk
-		output wire  locked    //  locked.export
+		output wire  locked,   //  locked.export
+
+		// Region retune. Only the fractional M value differs between NTSC and
+		// PAL; every counter is identical, so the output ratios are fixed by
+		// construction. See decision 0088.
+		input  wire [63:0] reconfig_to_pll,
+		output wire [63:0] reconfig_from_pll
 	);
 
 	pll_0002 pll_inst (
@@ -22,7 +28,9 @@ module pll (
 		.outclk_1 (outclk_1), // outclk1.clk
 		.outclk_2 (outclk_2), // outclk2.clk
 		.outclk_3 (outclk_3), // outclk3.clk
-		.locked   (locked)    //  locked.export
+		.locked   (locked),   //  locked.export
+		.reconfig_to_pll   (reconfig_to_pll),
+		.reconfig_from_pll (reconfig_from_pll)
 	);
 
 endmodule

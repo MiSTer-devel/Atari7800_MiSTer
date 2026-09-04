@@ -45,6 +45,7 @@ module Atari7800 #(
 	input logic         show_border,
 	input logic         show_overscan,
 	input logic         bypass_bios,
+	input logic         cart_present, // 0: empty slot, cart reads as open bus
 	input logic         tia_mode,
 	input logic         cpu_driver,
 
@@ -54,6 +55,7 @@ module Atari7800 #(
 	output logic [15:0] AB,
 	output logic [24:0] cart_addr_out,
 	input  logic [15:0] cart_flags,
+	input  logic [7:0]  cart_mapper,
 	input  logic  [7:0] cart_save,
 	input  logic [31:0] cart_size,
 	output logic  [7:0] cart_din,
@@ -111,7 +113,7 @@ module Atari7800 #(
 	output logic        PAread,
 
 	// 2600 Cart force flags based on detection
-	input logic [4:0]  force_bs,
+	input logic [5:0]  force_bs,
 	input logic [2:0]  mapper_revision,
 	input logic        cdf_ldx,
 	input logic        cdf_ldy,
@@ -139,8 +141,9 @@ module Atari7800 #(
 	input [10:0]       ps2_key,
 	input              pokey_irq,
 	input              minnie_en,
+	input              minnie_alt,
 	input              decomb,
-	input [4:0]        mapper,
+	input [5:0]        mapper,
 	input              pal_load,
 	input [9:0]        pal_addr,
 	input              pal_wr,
@@ -178,8 +181,14 @@ module Atari7800 #(
 	wire [7:0]      physical_write_DB = tia_en && bus_stuff_valid ?
 		(write_DB & bus_stuff_data) : write_DB;
 	logic [7:0]     tia_DB_out, riot_DB_out, maria_DB_out, ram0_DB_out, ram1_DB_out, cart_DB_out;
+	// Which data lines each chip is actually driving. Everything else on the
+	// bus drives all eight or none.
+	logic [7:0]     tia_DB_oe, riot_DB_oe, maria_DB_oe, cart_DB_oe;
+	logic [7:0]     cart_7800_DB_oe, cart_2600_DB_oe;
+	logic           cpu_DB_oe, cpu_AB_oe, cpu_RW_oe;
 	logic [15:0]    pokey_audio_r, pokey_audio_l, ym_audio_r, ym_audio_l;
 	logic [15:0]    minnie_audio;
+	logic [15:0]    sn_audio;
 	logic           mclk0;
 	logic           mclk1;
 	logic           cs_ram0, cs_ram1, cs_tia, cs_riot, cs_maria;
@@ -290,38 +299,63 @@ module Atari7800 #(
 	assign cart_read = tia_en ? (pause ? ~|pause_clock : read_2600) : ((pause ? pause_clock[0] : (cart_read_flag & mclk1)));
 	assign cart_addr_out = tia_en ? cart_2600_addr_out : cart_7800_addr_out;
 	assign cart_DB_out = tia_en ? cart_2600_DB_out : cart_7800_DB_out;
+	assign cart_DB_oe = tia_en ? cart_2600_DB_oe : cart_7800_DB_oe;
 	assign cpu_ce = pclk1;
 	assign VBlank_orig = maria_en ? maria_vblank : tia_vblank;
 
-	// Track the open bus since FPGA's don't use bidirectional logic internally
+	// The data bus is a wire with capacitance: nothing pulls it anywhere, so it
+	// keeps the last value something drove onto it. The CPU only drives through
+	// phase 2 of a write, which is what DB_OE marks; read_DB below carries every
+	// other driver, and holds this same value wherever no one drives.
+	// The bus as it actually stands: the CPU's byte while it is driving, and
+	// whatever the selected chip answers with otherwise. MARIA is the only part
+	// that both reads memory and takes register writes, so it is the only one
+	// that needs the whole thing rather than one direction.
+	wire [7:0] DB = cpu_DB_oe ? physical_write_DB : read_DB;
+
 	always_ff @(posedge clk_sys) begin
 		pause_clock <= pause ? pause_clock + 1'd1 : {1'b0, mclk1};
-		open_bus <= (~RW ? physical_write_DB : read_DB);
+		open_bus <= DB;
 		last_address <= AB;
 	end
 
 	wire cs_cart = ~|{cs_ram0, cs_ram1, cs_tia, cs_riot, cs_maria};
+	wire bios_sel = ~bios_en_b && AB[15];
 
+	// A selected chip drives only the lines its own oe mask marks - the TIA has
+	// no drivers at all on D5:D0 - and the bus keeps its charge on the rest.
+	// Nothing drives during a write, or into an empty cartridge slot.
 	always_comb begin
-		read_DB = open_bus;
-		if (cs_ram0)  read_DB = ram0_DB_out;
-		if (cs_ram1)  read_DB = ram1_DB_out;
-		if (cs_tia)   read_DB = {tia_DB_out[7:6], open_bus[5:0]};
-		if (cs_riot)  read_DB = riot_DB_out;
-		if (cs_maria) read_DB = maria_DB_out;
-		// Last, so the cartridge - the slowest source by far - reaches the bus
-		// through the fewest mux levels. cs_cart is the complement of the other
-		// selects, so the two can never both be true and the order is free.
-		if (cs_cart)  read_DB = (~bios_en_b && AB[15]) ? bios_out : cart_DB_out;
-
-		case ({~cpu_released, maria_drive_AB})
+		// A halt releases all three of SALLY's buses. The address lines hold
+		// their charge when neither the CPU nor MARIA drives them, and a cycle
+		// where both do is the wired AND of the two.
+		case ({cpu_AB_oe, maria_drive_AB})
 			2'b00 : AB = last_address;
 			2'b01 : AB = maria_AB_out;
 			2'b10 : AB = cpu_AB;
 			2'b11 : AB = cpu_AB & maria_AB_out;
 		endcase
-		RW = cpu_released ? 1'b1 : cpu_rwn;
+		// R/W is the one line nothing takes over: MARIA drives the address and
+		// reads the data, but leaves R/W to the board's pull up. That reads as
+		// a read for the whole halt, which is all DMA ever does.
+		RW = cpu_RW_oe ? cpu_rwn : 1'b1;
 
+		read_DB = open_bus;
+		if (RW) begin
+			if (cs_ram0)  read_DB = ram0_DB_out;
+			if (cs_ram1)  read_DB = ram1_DB_out;
+			if (cs_tia)   read_DB = (tia_DB_out   & tia_DB_oe)   | (open_bus & ~tia_DB_oe);
+			if (cs_riot)  read_DB = (riot_DB_out  & riot_DB_oe)  | (open_bus & ~riot_DB_oe);
+			if (cs_maria) read_DB = (maria_DB_out & maria_DB_oe) | (open_bus & ~maria_DB_oe);
+			// Last, so the cartridge - the slowest source by far - reaches the bus
+			// through the fewest mux levels. cs_cart is the complement of the other
+			// selects, so the two can never both be true and the order is free.
+			// The BIOS is a plain ROM and answers with the whole byte; the slot
+			// says which lines it drives, and an unclaimed one holds its charge.
+			if (cs_cart && (cart_present || bios_sel))
+				read_DB = bios_sel ? bios_out
+					: ((cart_DB_out & cart_DB_oe) | (open_bus & ~cart_DB_oe));
+		end
 	end
 
 	cpu_phase_controller phase_controller
@@ -382,9 +416,9 @@ module Atari7800 #(
 		.hide_border    (~show_border),
 		.bypass_bios    (bypass_bios),
 		.PAL            (PAL),
-		.d_in           (read_DB),
-		.write_DB_in    (write_DB),
+		.d_in           (DB),
 		.DB_out         (maria_DB_out),
+		.DB_out_oe      (maria_DB_oe),
 		.reset          (effective_reset),
 		.clk_sys        (clk_sys),
 		.pclk0          (pclk0_m),
@@ -431,6 +465,7 @@ module Atari7800 #(
 		.addr           ({(AB[5] & tia_en), AB[4:0]}),
 		.d_in           (physical_write_DB),
 		.d_out          (tia_DB_out),
+		.d_out_oe       (tia_DB_oe),
 		.i              (idump),     // On real hardware, these would be ADC pins. i0..3
 		.i_out          (i_out),
 		.i4             (ilatch[0]),
@@ -453,7 +488,6 @@ module Atari7800 #(
 		.row            (),
 		.column         (),
 		.phi1_in        (pclk1),
-		.open_bus       (open_bus),
 		.cart_ce        (cart_ce_2600),
 		.decomb         (decomb),
 		.is_pal         (tia_pal),
@@ -565,13 +599,24 @@ module Atari7800 #(
 	// signed PCM is offset into that convention. Halved along with every other
 	// external source when ext_audio is set, which is what keeps the sum from
 	// clipping when several sources sound at once.
+
+	// CoreTone renders with a lot of headroom: its channel scalar tops out at
+	// (127*127)>>8, so the loudest Rikki & Vikki track only reaches -7 dBFS and
+	// the quietest -24. Doubling brings it back level with TIA once ext_audio
+	// halves the sum. Saturate rather than wrap - doubling overflows exactly
+	// when the top two bits disagree, and a wrapped sample is a click.
+	wire [15:0] bup_gain_l = (bupchip_audio_l[15] ^ bupchip_audio_l[14]) ?
+		(bupchip_audio_l[15] ? 16'h8000 : 16'h7FFF) : {bupchip_audio_l[14:0], 1'b0};
+	wire [15:0] bup_gain_r = (bupchip_audio_r[15] ^ bupchip_audio_r[14]) ?
+		(bupchip_audio_r[15] ? 16'h8000 : 16'h7FFF) : {bupchip_audio_r[14:0], 1'b0};
+
 	// Signed two's complement into the mixer's unsigned-around-midpoint
 	// convention: inverting the sign bit is exactly the +$4000... offset, and
 	// costs one inverter instead of an adder.
 	wire [15:0] bupchip_mix_l = souper_profile ?
-		{~bupchip_audio_l[15], bupchip_audio_l[14:0]} : 16'd0;
+		{~bup_gain_l[15], bup_gain_l[14:0]} : 16'd0;
 	wire [15:0] bupchip_mix_r = souper_profile ?
-		{~bupchip_audio_r[15], bupchip_audio_r[14:0]} : 16'd0;
+		{~bup_gain_r[15], bup_gain_r[14:0]} : 16'd0;
 
 	wire [4:0] aud_index = audv0 + audv1;
 	wire [15:0] tia_r = (use_stereo ? audio_lut_single[audv0] : audio_lut[aud_index]);
@@ -583,8 +628,8 @@ module Atari7800 #(
 	// halved to ensure no clipping. If in the future more than two external audio devices are used
 	// at once, eg covox + ym2151 + tia, then more reduction will be needed, but for the time being
 	// that seems unlikely.
-	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + bupchip_mix_r + {tape_audio, 12'd0};
-	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + bupchip_mix_l + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_r = tia_r + pokey_audio_r + ym_audio_r + covox_r + minnie_audio + sn_audio + bupchip_mix_r + {tape_audio, 12'd0};
+	wire [16:0] audio_mix_l = tia_l + pokey_audio_l + ym_audio_l + covox_l + minnie_audio + sn_audio + bupchip_mix_l + {tape_audio, 12'd0};
 
 	assign AUDIO_R = ext_audio ? audio_mix_r[16:1] : audio_mix_r[15:0];
 	assign AUDIO_L = ext_audio ? audio_mix_l[16:1] : audio_mix_l[15:0];
@@ -616,7 +661,7 @@ module Atari7800 #(
 		.PA_out       (PAout),
 		.PB_in        (PBin),
 		.PB_out       (PBout),
-		.oe           (),
+		.oe           (riot_DB_oe),
 		// The chip decodes its own ORA read; the trackball steps on it.
 		.PA_read      (PAread)
 	);
@@ -632,6 +677,9 @@ module Atari7800 #(
 		.AB           (cpu_AB),
 		.DB_IN        (read_DB),
 		.DB_OUT       (write_DB),
+		.DB_OE        (cpu_DB_oe),
+		.AB_OE        (cpu_AB_oe),
+		.RW_OE        (cpu_RW_oe),
 		.RD           (cpu_rwn),
 		.IRQ_n        (IRQ_n),
 		.NMI_n        (NMI_n),
@@ -676,23 +724,23 @@ module Atari7800 #(
 	// Only this bus, the DDR3 channel, the load stream and the FA2 NVRAM file
 	// cross back out to the framework.
 
-	// CDFJ+ scales its RAM with the ROM; everything else takes the 8K default.
-	// Kept here because it reads force_bs, which is the core's own selection
-	// rather than the mapper cart2600 ends up running.
+	// CDFJ+ has 32K, every other family 8K - Stella's CartridgeCDF::ramSize(),
+	// `isCDFJplus() ? 32_KB : 8_KB`, with no reference to the ROM's size. This
+	// used to scale with cart_size, which gave a 32K CDFJ+ image 8K and a 64K
+	// one 16K, and mapper_ram_size bounds both the ARM's RAM window
+	// (arm_mapper_memory) and the CDFJ+ sample window (arm_mapper_audio), so an
+	// undersized value turns legitimate accesses into aborts. cart_ram_tdp is
+	// 32K (ADDR_WIDTH 15), so the full size fits. Kept here because it reads
+	// force_bs, the core's own selection rather than the mapper cart2600 runs.
 	logic [15:0] mapper_ram_size;
 	always_comb begin
 		mapper_ram_size = 16'd8192;
-		if (force_bs == BANKCDF && mapper_revision == 3'd3) begin
-			if (cart_size <= 32'd32768)
-				mapper_ram_size = 16'd8192;
-			else if (cart_size <= 32'd131072)
-				mapper_ram_size = 16'd16384;
-			else
-				mapper_ram_size = 16'd32768;
-		end
+		if (force_bs == BANKCDF && mapper_revision == 3'd3)
+			mapper_ram_size = 16'd32768;
 	end
 
 	logic        arm_ddr_req, arm_ddr_rnw, arm_ddr_ack, arm_ddr_rvalid;
+	logic        arm_ddr_timeout;
 	logic [28:0] arm_ddr_addr;
 	logic [63:0] arm_ddr_din, arm_ddr_dout;
 	logic  [7:0] arm_ddr_be, arm_ddr_len;
@@ -719,6 +767,10 @@ module Atari7800 #(
 	arm_host arm_host (
 		.clk_arm,
 		.reset_arm       (arm_reset || (souper_profile && bup_hold)),
+		// MARIA, the RAMs and the cartridge RAM's 6507 port all stop on pause;
+		// without this the ARM ran on, moving mapper state and cartridge RAM
+		// under a frozen 6507.
+		.ce              (~pause),
 		.halt_req        (souper_profile ? 1'b0 : arm_halt_req),
 		.halted          (arm_halted),
 		.mem_req         (arm_mem_req),
@@ -791,10 +843,7 @@ module Atari7800 #(
 		.ch2_ack          (bup_ddr_ack),
 		.ch2_dout         (bup_ddr_dout),
 		.ch2_rvalid       (bup_ddr_rvalid),
-		// ch1's consumer does not re-issue yet - that is
-		// Atari7800_MiSTer-4ux. The bridge still releases the port, so a stall
-		// on the ARM mapper no longer takes the BupChip down with it.
-		.ch1_timeout      (),
+		.ch1_timeout      (arm_ddr_timeout),
 		.ch2_timeout      (bup_ddr_timeout)
 	);
 
@@ -864,9 +913,15 @@ module Atari7800 #(
 	wire souper_profile = cart_flags[12] && !tia_mode;
 
 	assign arm2600_mem_req = souper_profile ? 1'b0 : arm_mem_req;
-	assign arm_mem_ready = souper_profile ? bup_mem_ready : arm2600_mem_ready;
-	assign arm_mem_abort = souper_profile ? bup_mem_abort : arm2600_mem_abort;
-	assign arm_mem_rdata = souper_profile ? bup_mem_rdata : arm2600_mem_rdata;
+	// An OR, not a profile mux: each adapter answers all-zero unless it is the
+	// one addressed. arm2600's bus cannot leave idle without a request, and
+	// bupchip_memory masks its answer outside S_ANSWER. The OR then folds into
+	// the adapters' own last mux level instead of adding one on the CPU's
+	// critical read path. The only cycles where this differs from the mux are
+	// ones with mem_ready low, which the core never samples.
+	assign arm_mem_ready = bup_mem_ready | arm2600_mem_ready;
+	assign arm_mem_abort = bup_mem_abort | arm2600_mem_abort;
+	assign arm_mem_rdata = bup_mem_rdata | arm2600_mem_rdata;
 
 	bupchip_subsystem #(.ROM_MIF(BUPCHIP_ROM_MIF), .ROM_INIT(BUPCHIP_ROM_INIT)) bupchip (
 		.clk_sys, .clk_arm,
@@ -886,6 +941,7 @@ module Atari7800 #(
 		.mem_wdata      (arm_mem_wdata),
 		.mem_wstrb      (arm_mem_wstrb),
 		.mem_size       (arm_mem_size),
+		.mem_ce         (~pause),
 		.mem_ready      (bup_mem_ready),
 		.mem_abort      (bup_mem_abort),
 		.mem_rdata      (bup_mem_rdata),
@@ -919,6 +975,7 @@ module Atari7800 #(
 		.din            (write_DB),
 		.rom_din        (cart_out),
 		.cart_flags     (cart_flags),
+		.cart_mapper    (cart_mapper),
 		.cart_size      (cart_size),
 		.cart_save      (cart_save),
 		.cart_cs        (cs_cart),
@@ -934,26 +991,33 @@ module Atari7800 #(
 		.hsc_ram_din    (hsc_ram_dout),
 		.rw             (RW),
 		.dout           (cart_7800_DB_out),
+		.dout_oe        (cart_7800_DB_oe),
 		.pokey_audio_r  (pokey_audio_r),
 		.pokey_audio_l  (pokey_audio_l),
 		.minnie_audio   (minnie_audio),
 		.ym_audio_r     (ym_audio_r),
 		.ym_audio_l     (ym_audio_l),
 		.rom_address    (cart_7800_addr_out),
-		.open_bus       (open_bus),
 		.covox_r        (covox_r),
 		.covox_l        (covox_l),
+		.sn_audio       (sn_audio),
 		.external_audio (ext_audio_cart),
 		.ps2_key        (ps2_key),
 		.pokey_irq_en   (pokey_irq),
-		.minnie_en      (minnie_en)
+		.minnie_en      (minnie_en),
+		.minnie_alt     (minnie_alt)
 	);
 
 	assign cart_2600_addr_out[24:19] = '0;
-	assign cart_din = cpu_rwn ? read_DB : write_DB;
+	// What the 2600 slot sees on the data lines: the resolved bus on a read,
+	// the CPU's own byte on a write. RW, not the CPU's pin, so a released R/W
+	// reads as a read here too.
+	assign cart_din = RW ? read_DB : write_DB;
 
 	cart2600 cart2600
 	(
+		.pal            (PAL),
+		.ddr_timeout    (arm_ddr_timeout),
 		.d_out          (cart_2600_DB_out),
 		.d_in           (cart_din),
 		.a_in           (AB[12:0]),
@@ -1012,6 +1076,9 @@ module Atari7800 #(
 		.ddr_rvalid     (arm_ddr_rvalid),
 		.halt_req       (arm_halt_req),
 		.cpu_halted     (arm_halted),
+		// Paired with arm_host's own ce: stopping only the CPU leaves the
+		// memory system retiring answers nobody is there to take.
+		.mem_ce         (~pause),
 		.mem_req        (arm2600_mem_req),
 		.mem_ready      (arm2600_mem_ready),
 		.mem_abort      (arm2600_mem_abort),
@@ -1040,8 +1107,7 @@ module Atari7800 #(
 		.fa2_nvram_dirty,
 		.bus_stuff_valid,
 		.bus_stuff_data,
-		.oe             (),
-		.open_bus       (open_bus),
+		.oe             (cart_2600_DB_oe),
 		.tape_in        (tape_in),
 		.tape_audio     (tape_audio),
 		.fix_sc_cs      (fix_sc_cs)
@@ -1232,7 +1298,10 @@ module M6502C
 	input         halt_n,    // halt!
 	output [15:0] AB,        // address bus
 	output [7:0]  DB_OUT,    // data_out,
+	output        DB_OE,     // 1 while the CPU is driving D7:D0
 	output        RD,        // read enable
+	output        AB_OE,     // 0 while halted: A0-A15 released
+	output        RW_OE,     // 0 while halted: R/W released
 	output logic  is_halted  // This is used to indicate that sally has released the bus
 );
 
@@ -1271,7 +1340,7 @@ module M6502C
 		.so_n     (1'b1),
 		.data_in  (RD ? DB_IN : DB_OUT),
 		.data_out (DB_OUT),
-		.data_oe  (),
+		.data_oe  (DB_OE),
 		.addr_out (AB),
 		.rw_n     (RD),
 		.sync     (),
@@ -1279,8 +1348,8 @@ module M6502C
 		.phi2_out (),
 
 		.halt_n   (halt_n),
-		.addr_oe  (),
-		.rw_oe    (),
+		.addr_oe  (AB_OE),
+		.rw_oe    (RW_OE),
 		.is_halted(is_halted),
 		.jammed   (),
 

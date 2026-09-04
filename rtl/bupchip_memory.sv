@@ -31,6 +31,10 @@ module bupchip_memory #(
 	input  logic        reset,
 
 	// ARM bus.
+	// The console's run enable, the same one arm_host takes. Without it the
+	// one-cycle answer below is retired while the CPU is paused, and the
+	// request it still holds is then accepted again on every pass.
+	input  logic        mem_ce,
 	input  logic        mem_req,
 	input  logic [31:0] mem_addr,
 	input  logic        mem_write,
@@ -174,7 +178,7 @@ module bupchip_memory #(
 
 				S_ASSET: if (asset_valid) state <= S_ANSWER;
 
-				S_ANSWER: state <= S_IDLE;
+				S_ANSWER: if (mem_ce) state <= S_IDLE;
 
 				default: state <= S_IDLE;
 			endcase
@@ -187,8 +191,20 @@ module bupchip_memory #(
 
 	assign mem_ready = state == S_ANSWER;
 	assign mem_abort = state == S_ANSWER && req_bad;
-	assign mem_rdata = req_ram   ? ram_q   :
-	                   req_asset ? asset_q :
-	                   req_mmio  ? mmio_q  :
-	                               rom_q;
+	// All-zero until the first request after reset, so top.sv can OR this with
+	// the 2600 mappers' answer instead of muxing on the cartridge profile: the
+	// BupChip is held in reset whenever they own the CPU. `live` sets on the
+	// request edge, so it is already up in the answer cycle that follows, and
+	// after an answer the data holds as it always did. The one-hot form keeps
+	// every source one level from the output.
+	logic live;
+	always_ff @(posedge clk)
+		if (reset) live <= 1'b0;
+		else if (mem_req) live <= 1'b1;
+	wire ans_rom = live && !req_ram && !req_asset && !req_mmio;
+	assign mem_rdata =
+		({32{live && req_ram}}   & ram_q) |
+		({32{live && req_asset}} & asset_q) |
+		({32{live && req_mmio}}  & mmio_q) |
+		({32{ans_rom}}           & rom_q);
 endmodule

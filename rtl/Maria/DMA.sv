@@ -41,7 +41,6 @@ module dma(
 	input  logic        PCLKEDGE,
 	input  logic        pclk,
 
-	output logic        noslow,
 	output logic        latch_hpos,
 	output logic        HALT,
 	output logic        DLI,
@@ -178,7 +177,8 @@ logic [15:0] selected_address;
 logic DLI_flag;
 logic addr_latch;
 logic holey;
-
+wire holey8 = (incremented_address[11] & A11en);
+wire holey16 = 	(incremented_address[12] & A12en);
 // This arcane block of comparisons is a direct implementation of the state machine
 // that starts and stops DMA and controls NMI. In effect it waits for the first
 // falling edge of phi2 (aka phi1) with halt active, and then starts DMA.
@@ -227,7 +227,7 @@ logic old_halt;
 // here.
 logic [9:0] cond2_hi;
 logic [1:0] cond2_lo;
-wire [13:0] cond2 = {cond2_hi, ~|OFFSET, ~|WIDTH, cond2_lo}; // OFF0 and W0 are live
+wire [13:0] cond2 = {cond2_hi, ~|OFFSET, (~|WIDTH || holey), cond2_lo}; // OFF0 and W0 are live
 // Input gated by phi2
 assign dmas[47] = cond2 ==? 14'b10010x10xxxx00;
 assign dmas[46] = cond2 ==? 14'b10010x10xxxx11;
@@ -298,12 +298,8 @@ always_ff @(posedge clk_sys) begin
 		end_sr <= {end_sr[1:0], old_halt && ~HALT};
 		start_sr <= {start_sr[2:0], ~old_halt && HALT};
 		old_halt <= HALT;
-		if (~old_halt && HALT) begin
+		if (~old_halt && HALT)
 			sel5_cnt <= 3'd3;
-			noslow <= 1;
-		end else if (old_halt && ~HALT) begin
-			noslow <= 0;
-		end
 	end
 
 	if (mclk0) begin
@@ -329,8 +325,9 @@ always_ff @(posedge clk_sys) begin
 		XEN <= {XEN2, XEN1, XEN0}; // Gated by phi2, then phi1
 		addr_latch <= ALATCON; // gated by phi2, then phi1
 		add_sel <= ASEL; // Gated by phi2, then phi1
-		latch_byte <= ELRWA && ~holey; // gated by phi2, then phi1
+		latch_byte <= ELRWA; // gated by phi2, then phi1
 		halt_en <= vbe_halt || hbs_halt;
+		holey <= add_sel && ((holey8 || holey16) && incremented_address[15]);
 
 		// Gated by phi2, then phi1
 		TLD     <= rldcmp ==? 4'b0010;
@@ -371,14 +368,6 @@ always_ff @(posedge clk_sys) begin
 
 		if (addr_latch)
 			AB <= incremented_address;
-
-		if (add_sel) begin
-			if (((incremented_address[11] & A11en) || (incremented_address[12] & A12en))
-				&& incremented_address[15]) begin
-				holey <= 1;
-				WIDTH <= 0;
-			end
-		end
 
 		RSS0 <= (hbs_halt && sel_5); // gated by phi1
 		RSS1 <= (vbe_halt && sel_5);
@@ -457,7 +446,6 @@ always_ff @(posedge clk_sys) begin
 		end
 
 		if (DPLLD) begin
-			holey <= 0;
 			DL_PTR <= DL_PTR + 1'd1;
 		end
 
@@ -485,8 +473,7 @@ always_ff @(posedge clk_sys) begin
 				WIDTH <= d_in[4:0];
 				// Not on the drawing: WLATLDF is decoded from RLD alone, so the
 				// part loads PAL here unconditionally. The guard keeps a 4-byte
-				// header's terminating $00 from wiping the palette. Unsourced -
-				// .agents/evidence/maria/schematic_audit_2026-08-30.md N5.
+				// header's terminating $00 from wiping the palette.
 				if (LONGHDR || |d_in[4:0])
 					PAL <= d_in[7:5];
 			end else
@@ -554,7 +541,7 @@ always_ff @(posedge clk_sys) begin
 		vbe_halt <= 0;
 		hbs_halt <= 0;
 		{start_sr, end_sr, sel5_cnt} <= '0;
-		{old_halt, old_halt2, halt_en, sel5_1, sel5_2, noslow} <= '0;
+		{old_halt, old_halt2, halt_en, sel5_1, sel5_2} <= '0;
 		nmi_n <= 1;
 		PAL <= 0;
 		sel_last <= 0;

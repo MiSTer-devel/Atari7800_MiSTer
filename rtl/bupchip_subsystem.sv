@@ -40,6 +40,7 @@ module bupchip_subsystem #(
 	input  logic  [7:0] cmd_data_sys,
 
 	// ARM bus.
+	input  logic        mem_ce,		// Console run enable, as given to arm_host
 	input  logic        mem_req,
 	input  logic [31:0] mem_addr,
 	input  logic        mem_write,
@@ -96,7 +97,7 @@ module bupchip_subsystem #(
 
 	bupchip_memory #(.ROM_MIF(ROM_MIF), .ROM_INIT(ROM_INIT)) memory (
 		.clk(clk_arm), .reset(reset_arm || arm_hold),
-		.mem_req(mem_req && !arm_hold), .mem_addr, .mem_write, .mem_wdata,
+		.mem_ce, .mem_req(mem_req && !arm_hold), .mem_addr, .mem_write, .mem_wdata,
 		.mem_wstrb, .mem_size, .mem_ready, .mem_abort, .mem_rdata,
 		.asset_req(asset_rd_req), .asset_addr(asset_rd_addr),
 		.asset_rdata(asset_rd_data), .asset_valid(asset_rd_valid), .asset_size,

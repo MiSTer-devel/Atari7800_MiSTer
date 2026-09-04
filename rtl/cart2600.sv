@@ -15,12 +15,13 @@ module cart2600
 	input           ce,         // Original system clock enable (~3.579mhz) used to divide into crystals
 	input           phi1,       // CPU Phase 1 Signal (used for FE to catch data at the right moment)
 	input           phi2,
-	output   [7:0]  oe,         // Output Enable mask
-	input    [7:0]  open_bus,   // Input open bus to use when not driving data bus (Obselete, use oe)
+	output logic [7:0] oe,      // Which of d_out's lines the cartridge drives
 
 	// Autodetect info
 	input           sc,         // Superchip Enable
-	input    [4:0]  mapper,     // Bankswitching type (ie Mapper)
+	input           pal,        // Region: the ARM mapper timer divides by clk_arm's rate
+	input           ddr_timeout, // The DDR3 bridge gave up on our transaction
+	input    [5:0]  mapper,     // Bankswitching type (ie Mapper)
 	input    [2:0]  mapper_revision,
 	input           cdf_ldx,
 	input           cdf_ldy,
@@ -78,6 +79,7 @@ module cart2600
 	// ARM7TDMI bus, from arm_host in the core.
 	output          halt_req,
 	input           cpu_halted,
+	input           mem_ce,     // Console run enable, as given to arm_host
 	input           mem_req,
 	output          mem_ready,
 	output          mem_abort,
@@ -169,23 +171,46 @@ module cart2600
 	assign sel_ram_rw = ram_rw[mapper];
 	assign sel_ram_sel = ram_sel[mapper];
 	assign sel_ram_a = ram_a[mapper];
-	assign rom_a = rom_addr[mapper] & ((mapper == BANKE7 || mapper == BANK3F) ? rom_mask : {19{1'b1}});
-	assign oe = out_en[mapper];
-
+	// Mappers whose bank register is wider than the cart it is fitted to: a
+	// bank number past the end of the image wraps rather than reading nothing.
+	assign rom_a = rom_addr[mapper] & ((mapper == BANKE7 || mapper == BANK3F ||
+		mapper == BANKSB || mapper == BANK3E || mapper == BANKFC ||
+		mapper == BANKDF) ? rom_mask : {19{1'b1}});
+	// oe follows whichever branch actually put a byte on d_out, rather than the
+	// selected mapper's mask on its own. Two places differ, and both used to
+	// hide behind the open_bus default this mux started from:
+	//
+	//   - a RAM write port answers nothing. The mapper still claims the lines
+	//     for the window, but the inner `if (sel_ram_rw)` has no else, so a
+	//     write port read left the fallthrough value standing.
+	//   - the bad game screen is not a cartridge at all. It drives whatever it
+	//     is asked for, and BANKBUS revision 0 reaches it with a mask that goes
+	//     low outside the cartridge window.
+	//
+	// With both stated, nothing reads d_out where oe is clear, and top.sv holds
+	// the charge on those lines instead.
 	always_comb begin
-		d_out = open_bus;
-		if (is_bad_game)
+		d_out = 8'h00;
+		oe = 8'h00;
+		if (is_bad_game) begin
 			d_out = bg_data;
-		else if (|sel_out_en) begin
-			if (sel_flags_out[0])
+			oe = 8'hFF;
+		end else if (|sel_out_en) begin
+			if (sel_flags_out[0]) begin
 				d_out = sel_direct_do;
-			else if (sel_flags_out[1])
+				oe = sel_out_en;
+			end else if (sel_flags_out[1]) begin
 				d_out = (sel_direct_do & rom_do);
-			else if (sel_ram_sel) begin
-				if (sel_ram_rw)
+				oe = sel_out_en;
+			end else if (sel_ram_sel) begin
+				if (sel_ram_rw) begin
 					d_out = cr_do;
-			end else
+					oe = sel_out_en;
+				end
+			end else begin
 				d_out = rom_do;
+				oe = sel_out_en;
+			end
 		end
 	end
 
@@ -196,11 +221,15 @@ module cart2600
 	// design does not reproduce that issue.
 	wire address_change = old_ain != a_in;
 
-	// High from the clock edge that took this access until the address moves
-	// on, which is what closes the cartridge RAM write strobe above.
+	// High from the clock edge that took this access until the next 6507 cycle
+	// starts, which is what closes the cartridge RAM write strobe above. phi1
+	// re-arms it, not the address: `STA abs,X` without a page crossing presents
+	// one address for two cycles - the mandatory dummy read, then the store - so
+	// re-arming on the address alone gave the dummy cycle the only write and
+	// dropped the store.
 	logic access_taken;
 	always @(posedge clk) begin
-		if (reset || address_change)
+		if (reset || address_change || phi1)
 			access_taken <= 1'b0;
 		else if (phi2)
 			access_taken <= 1'b1;
@@ -211,13 +240,24 @@ module cart2600
 	end
 
 	// Bank CTY is compatible with F4 minus the ARM enhanced music
-	assign direct_do[BANKCTY]     = direct_do[BANKF4];
-	assign flags_out[BANKCTY]     = flags_out[BANKF4];
-	assign out_en[BANKCTY]        = out_en[BANKF4];
-	assign ram_sel[BANKCTY]       = ram_sel[BANKF4];
-	assign ram_rw[BANKCTY]        = ram_rw[BANKF4];
-	assign ram_a[BANKCTY]         = ram_a[BANKF4];
-	assign rom_addr[BANKCTY]      = rom_addr[BANKF4];
+	mapper_CTY mapper_CTY
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKCTY]),
+		.flags_out  (flags_out[BANKCTY]),
+		.oe         (out_en[BANKCTY]),
+		.ram_sel    (ram_sel[BANKCTY]),
+		.ram_rw     (ram_rw[BANKCTY]),
+		.ram_a      (ram_a[BANKCTY]),
+		.rom_a      (rom_addr[BANKCTY]),
+		.ce         (ce),
+		.rom_do     (rom_do)
+	);
 
 	logic [5:0] cdf_table_index;
 	logic [5:0] bus_pointer_index;
@@ -377,6 +417,8 @@ module cart2600
 	arm_mapper_subsystem arm_mappers (
 		.clk_sys         (clk),
 		.reset_sys       (reset_arm),
+		.pal,
+		.ddr_timeout,
 		.mapper_reset    (reset),
 		.load_start,
 		.load_addr,
@@ -441,6 +483,7 @@ module cart2600
 		.ddr_dout,
 		.ddr_rvalid,
 		.halt_req,
+		.mem_ce,
 		.mem_req,
 		.mem_ready,
 		.mem_abort,
@@ -1173,7 +1216,9 @@ module cart2600
 		.ram_sel    (ram_sel[BANKWD]),
 		.ram_rw     (ram_rw[BANKWD]),
 		.ram_a      (ram_a[BANKWD]),
-		.rom_a      (rom_addr[BANKWD])
+		.rom_a      (rom_addr[BANKWD]),
+		// An 8195-byte dump carries banks 2 and 3 swapped; detect2600 flags it.
+		.swapped    (mapper_revision[0])
 	);
 
 	mapper_3E mapper_3E
@@ -1226,6 +1271,116 @@ module cart2600
 		.ram_rw     (ram_rw[BANKEF]),
 		.ram_a      (ram_a[BANKEF]),
 		.rom_a      (rom_addr[BANKEF])
+	);
+
+	mapper_0840 mapper_0840
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANK0840]),
+		.flags_out  (flags_out[BANK0840]),
+		.oe         (out_en[BANK0840]),
+		.ram_sel    (ram_sel[BANK0840]),
+		.ram_rw     (ram_rw[BANK0840]),
+		.ram_a      (ram_a[BANK0840]),
+		.rom_a      (rom_addr[BANK0840])
+	);
+
+	mapper_FC mapper_FC
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKFC]),
+		.flags_out  (flags_out[BANKFC]),
+		.oe         (out_en[BANKFC]),
+		.ram_sel    (ram_sel[BANKFC]),
+		.ram_rw     (ram_rw[BANKFC]),
+		.ram_a      (ram_a[BANKFC]),
+		.rom_a      (rom_addr[BANKFC]),
+		.rom_size   (rom_size)
+	);
+
+	mapper_DF mapper_DF
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKDF]),
+		.flags_out  (flags_out[BANKDF]),
+		.oe         (out_en[BANKDF]),
+		.ram_sel    (ram_sel[BANKDF]),
+		.ram_rw     (ram_rw[BANKDF]),
+		.ram_a      (ram_a[BANKDF]),
+		.rom_a      (rom_addr[BANKDF]),
+		.big        (rom_size[18])
+	);
+
+	mapper_MC #(.SLICE(0)) mapper_MC_MC2K
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKMC2K]),
+		.flags_out  (flags_out[BANKMC2K]),
+		.oe         (out_en[BANKMC2K]),
+		.ram_sel    (ram_sel[BANKMC2K]),
+		.ram_rw     (ram_rw[BANKMC2K]),
+		.ram_a      (ram_a[BANKMC2K]),
+		.rom_a      (rom_addr[BANKMC2K]),
+		.load_start (load_start),
+		.rom_size   (rom_size)
+	);
+
+	mapper_MC #(.SLICE(1)) mapper_MC_MC4K
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKMC4K]),
+		.flags_out  (flags_out[BANKMC4K]),
+		.oe         (out_en[BANKMC4K]),
+		.ram_sel    (ram_sel[BANKMC4K]),
+		.ram_rw     (ram_rw[BANKMC4K]),
+		.ram_a      (ram_a[BANKMC4K]),
+		.rom_a      (rom_addr[BANKMC4K]),
+		.load_start (load_start),
+		.rom_size   (rom_size)
+	);
+
+	mapper_MC #(.SLICE(2)) mapper_MC_MC8K
+	(
+		.clk        (clk),
+		.reset      (reset),
+		.a_change   (address_change),
+		.sc         (sc),
+		.a_in       (a_in),
+		.d_in       (d_in),
+		.d_out      (direct_do[BANKMC8K]),
+		.flags_out  (flags_out[BANKMC8K]),
+		.oe         (out_en[BANKMC8K]),
+		.ram_sel    (ram_sel[BANKMC8K]),
+		.ram_rw     (ram_rw[BANKMC8K]),
+		.ram_a      (ram_a[BANKMC8K]),
+		.rom_a      (rom_addr[BANKMC8K]),
+		.load_start (load_start),
+		.rom_size   (rom_size)
 	);
 
 	mapper_JANE mapper_JANE

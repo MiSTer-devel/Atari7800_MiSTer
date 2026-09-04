@@ -76,6 +76,7 @@ module bupchip_asset_ddr #(
 	logic        pack_toggle;
 	logic [24:0] size_sys;
 	logic        end_toggle;
+	logic        start_toggle;
 	logic        pub_ack_sync1, pub_ack_sync2;
 
 	// The ARSC block begins at 128 + the header's declared ROM size. That has
@@ -101,6 +102,13 @@ module bupchip_asset_ddr #(
 
 	wire in_block = load_valid && |declared_size && load_addr >= asset_start;
 	wire [24:0] block_offset = load_addr - asset_start;
+
+	// A new cartridge is arriving, so the assets published for the last one are
+	// gone. This is the counterpart of end_toggle and rides the same crossing;
+	// arm_mapper_memory's epoch_toggle does the same job for shadow_ready.
+	always_ff @(posedge clk_sys)
+		if (load_start)
+			start_toggle <= ~start_toggle;
 
 	always_ff @(posedge clk_sys) begin
 		if (load_start) begin
@@ -152,6 +160,7 @@ module bupchip_asset_ddr #(
 	// ---- CDC ----------------------------------------------------------------
 	logic pack_sync1, pack_sync2, pack_seen;
 	logic end_sync1, end_sync2, end_seen;
+	logic start_sync1, start_sync2, start_seen;
 
 	logic        pub_ack;
 
@@ -222,6 +231,7 @@ module bupchip_asset_ddr #(
 			pack_sync1 <= 1'b0; pack_sync2 <= 1'b0; pack_seen <= 1'b0;
 			pub_ack <= 1'b0;
 			end_sync1 <= 1'b0; end_sync2 <= 1'b0; end_seen <= 1'b0;
+			start_sync1 <= 1'b0; start_sync2 <= 1'b0; start_seen <= 1'b0;
 			tag_valid <= '0;
 			asset_ready <= 1'b0;
 			asset_size <= 32'b0;
@@ -231,7 +241,21 @@ module bupchip_asset_ddr #(
 		end else begin
 			pack_sync1 <= pack_toggle; pack_sync2 <= pack_sync1;
 			end_sync1 <= end_toggle;  end_sync2 <= end_sync1;
+			start_sync1 <= start_toggle; start_sync2 <= start_sync1;
 			rd_valid <= 1'b0;
+
+			// Withdraw the published window for the whole of the new download.
+			// bupchip_subsystem turns this into arm_hold, which holds the ARM,
+			// its memory and the peripheral in reset, so the old firmware
+			// cannot read an ARSC block that is being overwritten and the new
+			// one boots from its reset vector when the assets land. Any
+			// transaction still in flight is left to finish on its own: the
+			// bridge owes it beats, and end_toggle clears tag_valid before
+			// anything is served again.
+			if (start_sync2 != start_seen) begin
+				start_seen <= start_sync2;
+				asset_ready <= 1'b0;
+			end
 
 			// rd_req is a level, and bupchip_memory only drops it after it has
 			// seen rd_valid. So D_ANSWER hands back to a D_IDLE that still sees

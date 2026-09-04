@@ -14,7 +14,32 @@
 
 module arm7tdmi_core
 	import arm7tdmi_pkg::*;
-(
+#(
+	// A DELIBERATE CYCLE-TIMING INACCURACY, OFF BY DEFAULT.
+	//
+	// On, every multiply takes one more internal cycle than the real part:
+	// DDI 0210C gives MUL, MLA, UMULL, UMLAL, SMULL and SMLAL as 1S+mI and this
+	// makes them 1S+(m+1)I. Results, flags and register writes are untouched -
+	// the only thing that moves is when the next instruction starts. The
+	// cycle-count checks in the testbenches are expected to differ on the
+	// multiply forms, by exactly one I cycle each and nothing else.
+	//
+	// It buys timing. `multiply_wait <= 1` is the retire decision, and unstaged
+	// it gates the instruction issue, the forwarding network and the CPSR flag
+	// read on one edge, from a single register with thousands of loads. Staging
+	// it makes a multiply finish the way a load already does -
+	// start_internal_completion into MEM_DONE, which issues the next
+	// instruction from registers an edge later - and that deletes the MUL_WAIT
+	// arms of decode_forwarding and decode_cpsr outright, because by then the
+	// result is in `rf` and the flags are in `cpsr`.
+	//
+	// Turn it on only where the extra cycle is affordable, and measure rather
+	// than assume it is. A host that stalls its bus master for the whole call
+	// does not hide the cost - there the CPU's time is the caller's time, so
+	// the multiply gets slower and so does the caller. A core that needs the
+	// manual's numbers must leave it off, which is why off is the default.
+	parameter bit MUL_RETIRE_STAGE = 1'b0
+) (
 	input  logic        clk,
 	input  logic        reset,
 	input  logic        ce,
@@ -215,6 +240,17 @@ module arm7tdmi_core
 	logic  [3:0] multiply_rd_lo;
 	logic  [3:0] multiply_rd_hi;
 	logic  [2:0] multiply_wait;
+	// `multiply_wait <= 1` is the multiply's retire decision, and one register
+	// carrying it reaches the instruction issue, the forwarding network and the
+	// register file at once - thousands of loads, and enough routing to reach
+	// the first LUT to matter. The count is loaded at entry and only ever
+	// decrements, so the decision is known an edge early: it is registered here
+	// rather than recomputed from the counter at each read. One copy per
+	// consumer group so each can sit with its loads - dont_merge keeps the
+	// groups apart, maxfan lets the fitter replicate inside one.
+	logic        mul_retire_seq   /* synthesis dont_merge maxfan = 32 */;
+	logic        mul_retire_fwd   /* synthesis dont_merge maxfan = 32 */;
+	logic        mul_retire_flags /* synthesis dont_merge maxfan = 32 */;
 	logic [63:0] mul_acc;
 	logic [31:0] mul_mplier;
 	logic [31:0] mul_mcand;
@@ -985,7 +1021,9 @@ module arm7tdmi_core
 				end
 			end
 			MUL_WAIT: begin
-				if (multiply_wait <= 1) begin
+				// Nothing to forward when the retire is staged: MEM_DONE
+				// issues the next instruction an edge after `rf` was written.
+				if (!MUL_RETIRE_STAGE && mul_retire_fwd) begin
 					if (multiply_rd_lo < 15) begin
 						decode_forward_0_valid = 1'b1;
 						decode_forward_0_index = multiply_rd_lo;
@@ -1008,7 +1046,9 @@ module arm7tdmi_core
 			(exec_kind == EXEC_SIMPLE) &&
 			(exec_write_flags || (exec_write_psr && !exec_write_spsr)))
 			decode_cpsr = exec_effective_post_cpsr;
-		else if ((state == MUL_WAIT) && (multiply_wait <= 1) &&
+		// Dead when the retire is staged: `cpsr` itself already holds
+		// multiply_post_cpsr by the MEM_DONE edge that reads it.
+		else if (!MUL_RETIRE_STAGE && (state == MUL_WAIT) && mul_retire_flags &&
 			multiply_set_flags)
 			decode_cpsr = multiply_post_cpsr;
 	end
@@ -2446,8 +2486,64 @@ module arm7tdmi_core
 		logic        rf_we_a, rf_we_b;
 		logic  [4:0] rf_wa_a, rf_wa_b;
 		logic [31:0] rf_wd_a, rf_wd_b;
-		rf_we_a = 1'b0; rf_wa_a = 5'd0; rf_wd_a = 32'b0;
-		rf_we_b = 1'b0; rf_wa_b = 5'd0; rf_wd_b = 32'b0;
+		rf_we_a = 1'b0;
+		rf_we_b = 1'b0;
+		// The write address and data are don't-cares while the enable is low,
+		// so pick both from the state here and let the enable alone carry
+		// whether the access finished. Setting them inside those branches
+		// instead put the bus's ready in front of the register file's address
+		// decode and its data mux, when ready only ever needed the flop's
+		// enable. Each state below has exactly one writer per port; RUN has two
+		// and they split on the instruction kind, which is already decoded.
+		case (state)
+			RUN: begin
+				rf_wa_a = (exec_kind == EXEC_BRANCH) ?
+				          rf_index(4'd14, cpsr[4:0]) :
+				          rf_index(exec_rd, cpsr[4:0]);
+				rf_wd_a = (exec_kind == EXEC_BRANCH) ?
+				          exec_link_value : exec_effective_result;
+			end
+			MEM_ACCESS: begin
+				rf_wa_a = rf_index(data_rn, cpsr[4:0]);
+				rf_wd_a = data_writeback_value;
+			end
+			SWP_WRITE: begin
+				rf_wa_a = rf_index(swp_rd, cpsr[4:0]);
+				rf_wd_a = swp_loaded_value;
+			end
+			BLOCK_ACCESS: begin
+				rf_wa_a = rf_index(block_index[3:0],
+				          block_user ? MODE_USER : cpsr[4:0]);
+				rf_wd_a = mem_rdata;
+			end
+			MUL_WAIT: begin
+				rf_wa_a = rf_index(multiply_rd_lo, cpsr[4:0]);
+				rf_wd_a = multiply_final_result[31:0];
+			end
+			default: begin                            // HALTED
+				rf_wa_a = state_rf_index;
+				rf_wd_a = state_wdata;
+			end
+		endcase
+		case (state)
+			MEM_ACCESS: begin
+				rf_wa_b = rf_index(data_rd, cpsr[4:0]);
+				rf_wd_b = data_loaded_value;
+			end
+			BLOCK_ACCESS: begin
+				rf_wa_b = rf_index(block_rn,
+				          block_user ? MODE_USER : cpsr[4:0]);
+				rf_wd_b = block_writeback_value;
+			end
+			MUL_WAIT: begin
+				rf_wa_b = rf_index(multiply_rd_hi, cpsr[4:0]);
+				rf_wd_b = multiply_final_result[63:32];
+			end
+			default: begin
+				rf_wa_b = 5'd0;
+				rf_wd_b = 32'b0;
+			end
+		endcase
 		retire <= 1'b0;
 		state_ready <= 1'b0;
 
@@ -2536,6 +2632,9 @@ module arm7tdmi_core
 			multiply_rd_lo <= 4'b0;
 			multiply_rd_hi <= 4'b0;
 			multiply_wait <= 3'b0;
+			mul_retire_seq <= 1'b0;
+			mul_retire_fwd <= 1'b0;
+			mul_retire_flags <= 1'b0;
 			mul_acc <= 64'b0;
 			mul_mplier <= 32'b0;
 			mul_mcand <= 32'b0;
@@ -2617,8 +2716,6 @@ module arm7tdmi_core
 									if (!exec_simple_control || !mem_req || mem_ready) begin
 										if (exec_write_reg && (exec_rd < 15)) begin
 											rf_we_a = 1'b1;
-											rf_wa_a = rf_index(exec_rd, cpsr[4:0]);
-											rf_wd_a = exec_effective_result;
 										end
 										if (exec_write_psr && exec_write_spsr && mode_has_spsr(cpsr[4:0]))
 											write_spsr_for_mode(cpsr[4:0],
@@ -2658,8 +2755,6 @@ module arm7tdmi_core
 									if (!mem_req || mem_ready) begin
 										if (exec_link) begin
 											rf_we_a = 1'b1;
-											rf_wa_a = rf_index(4'd14, cpsr[4:0]);
-											rf_wd_a = exec_link_value;
 										end
 										if (exec_restore_spsr) begin
 											cpsr <= current_spsr;
@@ -2770,6 +2865,9 @@ module arm7tdmi_core
 										multiply_rd_lo <= exec_multiply_rd_lo;
 										multiply_rd_hi <= exec_multiply_rd_hi;
 										multiply_wait <= dp_multiply_wait;
+										mul_retire_seq <= (dp_multiply_wait <= 3'd1);
+										mul_retire_fwd <= (dp_multiply_wait <= 3'd1);
+										mul_retire_flags <= (dp_multiply_wait <= 3'd1);
 										multiply_long <= exec_multiply_long;
 										multiply_set_flags <= exec_multiply_set_flags;
 										multiply_resume_pc <= decode_pc + (thumb ? 32'd2 : 32'd4);
@@ -2881,13 +2979,9 @@ module arm7tdmi_core
 						end else begin
 							if (data_writeback && (data_rn < 15)) begin
 								rf_we_a = 1'b1;
-								rf_wa_a = rf_index(data_rn, cpsr[4:0]);
-								rf_wd_a = data_writeback_value;
 							end
 							if (data_load && !data_load_pc) begin
 								rf_we_b = 1'b1;
-								rf_wa_b = rf_index(data_rd, cpsr[4:0]);
-								rf_wd_b = data_loaded_value;
 							end
 							// A load spends one internal cycle after its data
 							// transfer - DDI 0210C Table 6-23 gives LDR as
@@ -2953,8 +3047,6 @@ module arm7tdmi_core
 							enter_exception(MODE_ABT, VECTOR_DABT, swp_resume_pc + 32'd4, cpsr, 1'b0);
 						end else if (swp_rd < 15) begin
 							rf_we_a = 1'b1;
-							rf_wa_a = rf_index(swp_rd, cpsr[4:0]);
-							rf_wd_a = swp_loaded_value;
 							// Table 6-23 gives SWP as S+2N+I.
 							start_internal_completion(swp_resume_pc, 1'b0);
 						end else begin
@@ -2977,9 +3069,6 @@ module arm7tdmi_core
 								end
 								else begin
 									rf_we_a = 1'b1;
-									rf_wa_a = rf_index(block_index[3:0],
-										block_user ? MODE_USER : cpsr[4:0]);
-									rf_wd_a = mem_rdata;
 								end
 							end
 							if (!block_last) begin : block_advance_next
@@ -3020,9 +3109,6 @@ module arm7tdmi_core
 								// the user one (oracle-verified).
 								if (block_writeback && (block_rn < 15)) begin
 									rf_we_b = 1'b1;
-									rf_wa_b = rf_index(block_rn,
-										block_user ? MODE_USER : cpsr[4:0]);
-									rf_wd_b = block_writeback_value;
 								end
 								if (block_load && (block_index == 15)) begin
 									if (block_restore_cpsr) begin
@@ -3065,25 +3151,48 @@ module arm7tdmi_core
 						mc_accum <= mc_accum_next;
 						mc_carry <= mc_carry_next;
 					end
-					if (multiply_wait > 1) begin
+					if (!mul_retire_seq) begin
 						multiply_wait <= multiply_wait - 1'b1;
+						mul_retire_seq <= (multiply_wait <= 3'd2);
+						mul_retire_fwd <= (multiply_wait <= 3'd2);
+						mul_retire_flags <= (multiply_wait <= 3'd2);
 					end else begin
+						mul_retire_seq <= 1'b0;
+						mul_retire_fwd <= 1'b0;
+						mul_retire_flags <= 1'b0;
 						if (multiply_rd_lo < 15) begin
 							rf_we_a = 1'b1;
-							rf_wa_a = rf_index(multiply_rd_lo, cpsr[4:0]);
-							rf_wd_a = multiply_final_result[31:0];
 						end
 						if (multiply_long && (multiply_rd_hi < 15)) begin
 							rf_we_b = 1'b1;
-							rf_wa_b = rf_index(multiply_rd_hi, cpsr[4:0]);
-							rf_wd_b = multiply_final_result[63:32];
 						end
 						if (multiply_set_flags)
 							cpsr <= multiply_post_cpsr;
 						// A destination of R15 is UNPREDICTABLE; the result
 						// lands in the fetch counter, the high word winning
 						// when both halves name it (oracle-verified).
-						if ((multiply_rd_lo == 4'd15) ||
+						if (MUL_RETIRE_STAGE) begin
+							// The deliberate extra cycle. The multiply
+							// finishes here, but the next instruction does not
+							// start until MEM_DONE - one edge later than the
+							// real part would have started it.
+							//
+							// MEM_DONE reads the same values from registers:
+							// `multiply_post_cpsr` differs from `cpsr` only in
+							// bits 31:29, and `cpsr` has taken it by then, so
+							// its cpsr[7:0]/cpsr[7:6]/cpsr[4:0]/cpsr[5]
+							// arguments are the ones passed below. The bus
+							// clear inside is a no-op - MUL entry already
+							// retained the fetch and dropped mem_req.
+							start_internal_completion(
+								(multiply_long && (multiply_rd_hi == 4'd15)) ?
+									multiply_final_result[63:32] :
+								(multiply_rd_lo == 4'd15) ?
+									multiply_final_result[31:0] :
+									multiply_resume_pc,
+								(multiply_rd_lo == 4'd15) ||
+								(multiply_long && (multiply_rd_hi == 4'd15)));
+						end else if ((multiply_rd_lo == 4'd15) ||
 							(multiply_long && (multiply_rd_hi == 4'd15))) begin
 							finish_control(
 								(multiply_long && (multiply_rd_hi == 4'd15)) ?
@@ -3091,11 +3200,12 @@ module arm7tdmi_core
 									multiply_final_result[31:0],
 								cpsr[5], multiply_post_cpsr[7:6],
 								multiply_post_cpsr[4:0]);
+							state <= RUN;
 						end else begin
 							finish_sequential(multiply_resume_pc,
 								multiply_post_cpsr[7:0], 1'b1);
+							state <= RUN;
 						end
-						state <= RUN;
 					end
 				end
 
@@ -3147,8 +3257,6 @@ module arm7tdmi_core
 										STATE_UND_SPSR: spsr_und <= state_wdata;
 										default: begin
 											rf_we_a = 1'b1;
-											rf_wa_a = state_rf_index;
-											rf_wd_a = state_wdata;
 										end
 									endcase
 								end

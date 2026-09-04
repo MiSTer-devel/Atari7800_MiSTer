@@ -26,8 +26,8 @@ module maria(
 	input  logic [15:0] AB_in,
 	output logic [15:0] AB_out,
 	input  logic  [7:0] d_in,
-	input  logic  [7:0] write_DB_in,
 	output logic  [7:0] DB_out,
+	output logic  [7:0] DB_out_oe,
 
 	// Clocking
 	input logic         reset,
@@ -106,7 +106,6 @@ module maria(
 	logic [7:0]       UV_out;
 	logic [2:0]       clock_div = 3'd2;
 	logic [1:0]       edge_counter;
-	logic [7:0]       pal_counter = 8'd0;
 	logic             wsync;
 	logic             border;
 	logic             prst;
@@ -128,10 +127,8 @@ module maria(
 	logic             ready_int;
 	logic             cram_sel;
 	logic             ABEN;
-	logic             old_ready;
 	logic             old_men = 1'b0;
 	logic [3:0]       men_count = 4'd0;
-	logic             noslow;
 	logic             pclk = 1'b0;
 	logic             tia_clk_en;
 	logic [3:0]       tia_enable_count = 4'd2;
@@ -143,7 +140,15 @@ module maria(
 	// Maria being enabled is a condition for NMI
 	assign NMI_n = NMI_ung_n || ~maria_en;
 	assign halt_n = ~halt_en;
-	assign ready = ~pclk ? (lrc || ready_int) : old_ready;
+	// WSYNC on the die is an asynchronous cross-coupled NOR latch - page 18,
+	// MARIA_CONTROL, x 7300-7840 - and its output reaches the WAIT pad through
+	// a NOR and two inverters with nothing clocked in between. So READY is the
+	// latch straight out. The phase 2 hold this replaces made SALLY read a
+	// value one phase old, which cost an extra CPU cycle whenever the
+	// processor clock was stretched; the separate `lrc` term was redundant,
+	// since `lrc` sets `ready_int` on the same tick, and glitched the pin for
+	// one clk_sys where phase 2 began before that value was consumed.
+	assign ready = ready_int;
 
 	assign tia_clk_en = ~|tia_enable_count;
 	assign tia_clk_x2 = tia_clk_en && mclk0;
@@ -155,7 +160,6 @@ module maria(
 		pclk1 <= 1'b0;
 
 		if (reset) begin
-			old_ready <= 1'b1;
 			ready_int <= 1'b1;
 		end
 
@@ -174,13 +178,12 @@ module maria(
 				men_count <= men_count - 1'd1;
 
 			// Follow the phase pulse itself, not the mclk0 that normally
-			// carries it. PCLK0 and PCLK1 are emitted from mclk1, so they land
-			// on the next cycle - an mclk0 cycle every time except one: the PAL
-			// bubble clears both mclk halves, and when it clears that cycle the
-			// level never follows the pulse it was given. READY and HALT are
-			// muxed on this level, so the CPU reads the phase 1 value through
-			// the whole of phase 2 and drops a PC increment. Outside a bubble
-			// this is the same cycle it always was.
+			// carries it. This is decision 0076, from when PAL was slowed by
+			// dropping one master clock in 110 and a dropped cycle could steal
+			// the toggle. PAL now has its own clock out of the PLL (decision
+			// 0088) and there is no bubble, so a phase pulse always lands on an
+			// mclk0 cycle and this is the same cycle either way. Kept because
+			// following the pulse states the intent more directly.
 			if (pclk1)
 				pclk <= 0;
 			else if (pclk0)
@@ -189,16 +192,11 @@ module maria(
 			if (pclk0)
 				slow_clk_latch <= sel_slow_clock;
 
-			if (PAL && pal_counter == 8'd109) begin
-				pal_counter <= 8'd0;
-				mclk0 <= 1'b0;
-				mclk1 <= 1'b0;
-			end else begin
-				pal_counter <= PAL ? pal_counter + 8'd1 : 8'd0;
-				mclk0 <= clk_toggle;
-				mclk1 <= ~clk_toggle;
-				clk_toggle <= ~clk_toggle;
-			end
+			// Uniform in both regions: PAL's master clock is simply slower,
+			// out of the PLL (decision 0088). MARIA halves clk_sys either way.
+			mclk0 <= clk_toggle;
+			mclk1 <= ~clk_toggle;
+			clk_toggle <= ~clk_toggle;
 
 			if (!reset) begin
 				if (wsync)
@@ -207,9 +205,6 @@ module maria(
 					if (lrc)
 						ready_int <= 1'b1;
 
-				if (~pclk) begin
-					old_ready <= ready_int;
-				end
 			end
 
 			// The timing schematic has no reset input to the processor-clock
@@ -261,14 +256,14 @@ module maria(
 		.maria_en        (maria_en),
 		.AB              (AB_in),
 		.ABEN            (drive_AB),
-		.DB_in           (write_DB_in),
+		.DB_in           (d_in),
 		.DB_out          (DB_out),
+		.DB_out_oe       (DB_out_oe),
 		.RW              (RW),
 		.drive_AB        (drive_AB),
 		.ctrl            (ctrl),
 		.color_map       (color_map),
 		.status_read     ({vblank, 7'b0}),
-		.noslow          (noslow),
 		.char_base       (char_base),
 		.ZP              (ZP),
 		.pal             (PAL),
@@ -316,7 +311,6 @@ module maria(
 		.DLI             (DLI_en),
 		.WM              (wm),
 		.PAL             (palette),
-		.noslow          (noslow),
 		.ZP              (ZP),
 		.char_width      (ctrl[4]),
 		.char_base       (char_base),

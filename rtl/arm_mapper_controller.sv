@@ -202,14 +202,17 @@ module arm_mapper_controller
 	logic [31:0] active_audio_frequency [0:2];
 	logic [4:0] write_index;
 	logic [2:0] audio_read_index;
+	// state_index as a register, updated wherever write_index or
+	// audio_read_index change, so the CPU's register-file index decode starts
+	// from a flop instead of behind this adder and mux.
+	logic [5:0] state_index_q;
 
 	always_comb begin
 		halt_req = control_state != CTRL_RUNNING;
 		state_req = control_state == CTRL_WRITE_STATE ||
 			control_state == CTRL_READ_AUDIO;
 		state_write = control_state == CTRL_WRITE_STATE;
-		state_index = control_state == CTRL_READ_AUDIO ?
-			STATE_FIQ_R8 + {3'b0, audio_read_index} : {1'b0, write_index};
+		state_index = state_index_q;
 		state_wdata = 32'b0;
 		state_commit = control_state == CTRL_COMMIT;
 
@@ -255,6 +258,7 @@ module arm_mapper_controller
 			end
 			write_index <= '0;
 			audio_read_index <= '0;
+			state_index_q <= '0;
 			control_state <= CTRL_WAIT_HALT;
 		end else begin
 			call_sync1 <= call_toggle;
@@ -295,6 +299,7 @@ module arm_mapper_controller
 							call_seen <= call_sync2;
 							call_ack_arm <= call_sync2;
 							write_index <= 5'd0;
+							state_index_q <= 6'd0;
 							control_state <= CTRL_WRITE_STATE;
 						end
 					end
@@ -305,6 +310,7 @@ module arm_mapper_controller
 								control_state <= CTRL_COMMIT;
 							else
 								write_index <= write_index + 5'd1;
+								state_index_q <= {1'b0, write_index + 5'd1};
 						end
 					end
 
@@ -319,6 +325,7 @@ module arm_mapper_controller
 					CTRL_RETURN_HALT: begin
 						if (cpu_halted) begin
 							audio_read_index <= 3'd0;
+							state_index_q <= STATE_FIQ_R8;
 							control_state <= CTRL_READ_AUDIO;
 						end
 					end
@@ -342,6 +349,8 @@ module arm_mapper_controller
 							control_state <= CTRL_IDLE;
 						end else begin
 							audio_read_index <= audio_read_index + 3'd1;
+							state_index_q <= STATE_FIQ_R8 +
+								{3'b0, audio_read_index + 3'd1};
 							control_state <= CTRL_READ_AUDIO;
 						end
 					end

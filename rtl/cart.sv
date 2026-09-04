@@ -13,6 +13,7 @@ module cart
 	input  logic        halt_n,
 	input  logic [7:0]  rom_din,
 	input  logic [15:0] cart_flags,
+	input  logic [7:0]  cart_mapper,	// A78 v4 header byte 64; 5 = ACE
 	input  logic [31:0] cart_size,
 	input  logic [7:0]  cart_save,
 	input  logic        cart_cs,
@@ -21,7 +22,6 @@ module cart
 	input  logic        hsc_en,
 	input  logic  [7:0] hsc_ram_din,
 	input  logic  [7:0] cart_xm,
-	input  logic  [7:0] open_bus,
 	input  logic [10:0] ps2_key,
 	input  logic        pokey_irq_en,
 
@@ -29,10 +29,12 @@ module cart
 	output logic        aud_cmd_valid,
 	output logic  [7:0] aud_cmd_data,
 	input  logic        minnie_en,
+	input  logic        minnie_alt,
 	input  logic [7:0]  cartram_data,
 
 	output logic        IRQ_n,
 	output logic [7:0]  dout,
+	output logic [7:0]  dout_oe,	// which of dout's lines the slot is driving
 	output logic        hsc_ram_cs,
 	output logic        cart_read,
 	output logic [15:0] pokey_audio_r,
@@ -42,6 +44,7 @@ module cart
 	output logic [15:0] ym_audio_l,
 	output logic [15:0] covox_r,
 	output logic [15:0] covox_l,
+	output logic [15:0] sn_audio,
 	output logic        external_audio,
 	output logic [24:0] rom_address,
 	output logic [17:0] cartram_addr,
@@ -57,12 +60,13 @@ logic [7:0] hsc_rom_dout;
 logic [7:0] hsc_ram_dout;
 logic [7:0] pokey4k_dout, pokey2_dout;
 logic [7:0] minnie_dout;
+logic       minnie_doe;
 logic       minnie_active;
 
 logic rom_cs, ram_cs, pokey_cs, ym_cs;
 logic [2:0] hardware_map[16];
 logic [7:0] bank_map[16];
-logic [2:0] bank_type; // 00 = Supergame, 01 = Activision, 02 = none 03 = absolute
+logic [2:0] bank_type; // 00 = Supergame, 01 = Activision, 02 = none 03 = absolute 04 = souper 05 = ACE
 logic [31:0] address_offset;
 logic [2:0] cart_cs_reg, cart_cs_reg_m;
 logic [7:0] bank_mask;
@@ -110,6 +114,42 @@ wire [7:0] second_highest_bank = is_9b ? 8'd0 : (|highest_bank ? highest_bank - 
 wire [7:0] sg_bank = (bank_reg & bank_mask) + is_9b;
 wire is_bankset_52k = (is_bankset && cart_size_bs == 32'hD000);
 
+// ACE, the SN Cart board. $8000-$FFFF is eight 4K pages; four are fixed at the
+// EPROM's first 32K and four move. A window moves when a bank number is written
+// to that window's base address. $A000/$C000/$E000 take a six bit bank and a two
+// bit read transform in D7:D6; $D000 takes a seven bit bank and no transform.
+// The power-up values are the linear map, wired into the register bits on the
+// board. See references/SNCartDemo/Cartridge_512kb_4kb_bankswitch/Info.txt.
+wire is_ace = cart_mapper == 8'd5;
+logic [7:0] ace_a, ace_c, ace_d, ace_e;	// $A000 $C000 $D000 $E000
+logic [2:0] ace_ram;			// $FFFF: RAM bank, force A8 low, force A9 low
+logic [1:0] ace_swap;
+logic [7:0] ace_dout;
+
+// A bankset cart serves MARIA a different 48K than it serves SALLY and picks
+// between them off /HALT. All it has to go on is what the slot carries: /HALT
+// on J1-2 and phi2 on J1-32. Nothing tells it when SALLY actually lets go of
+// the bus, so it has to count the handover out for itself.
+//
+// It cannot switch on the /HALT edge: SALLY keeps the bus for two more cycles
+// after /HALT drops, and a cart that switched early would feed the CPU the
+// MARIA bank for those two cycles - the "brief execution from the second
+// bankset" failure in the test suite's README. Two cycles here is the same
+// count SALLY's own flip-flop pair makes.
+//
+// phi2 is the count's clock because phi2 is the clock the cartridge has.
+// Counting on phi1 put the switch a phase late - MARIA was already driving the
+// address bus while this still selected SALLY's bank - and no real cart could
+// do it anyway, since phi1 never reaches the connector.
+always_ff @(posedge clk_sys) if (pclk0) begin
+	if (~halt_n) begin
+		if (is_bankset && ~bankset_count[1])
+			bankset_count <= bankset_count + 1'd1;
+	end else begin
+		bankset_count <= 2'd0;
+	end
+end
+
 always_ff @(posedge clk_sys) if (pclk1) begin
 	hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0, 3'd0};
 	bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0};
@@ -118,15 +158,15 @@ always_ff @(posedge clk_sys) if (pclk1) begin
 	bank_mask <= 8'b11111111;
 	ram_mask <= '1;
 	bs_map <= 9'd0;
-	if (~halt_n) begin
-		if (is_bankset && ~bankset_count[1])
-			bankset_count <= bankset_count + 1'd1;
-	end else begin
-		bankset_count <= 2'd0;
-	end
 
 	// Banking mode selector
-	if (cart_flags[8]) begin                                   // Activision
+	if (is_ace) begin                                          // ACE
+		hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd3, 3'd3, 3'd3, 3'd3, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
+		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0, 8'd0,
+			8'd0, 8'd1, {2'd0, ace_a[5:0]}, 8'd3,
+			{2'd0, ace_c[5:0]}, {1'd0, ace_d[6:0]}, {2'd0, ace_e[5:0]}, 8'd7};
+		bank_type <= 3'd5;
+	end else if (cart_flags[8]) begin                          // Activision
 		hardware_map <= '{3'd0, 3'd0, 3'd0, 3'd0, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4, 3'd4};
 		bank_map <= '{8'd0, 8'd0, 8'd0, 8'd0, 8'd13, 8'd13, 8'd12, 8'd12, 8'd15, 8'd15, 8'd0, 8'd0, 8'd0, 8'd0, 8'd14, 8'd14};
 		bank_map[10] <= {bank_reg[2:0], 1'b0};
@@ -275,7 +315,10 @@ wire is_pokey_440 = (((cart_flags[10] || XCTRL1[4]) && address_in[15:4] == 8'h44
 wire is_pokey_4k = ((cart_flags[0] && address_in[15:14] == 2'b01) && cart_cs);
 wire is_pokey_800 = ((cart_flags[15] && address_in[15:11] == 5'h1) && cart_cs);
 wire pokey4k_wo = cart_flags[0] && (cart_flags[3] || is_bankset);
-wire is_covox = address_in[15:4] == 12'h43;
+// One Covox at $0430 on the ACE board, and an SN76489AN at $043F that the four
+// register decode below must not claim.
+wire is_covox = is_ace ? (address_in == 16'h0430) : (address_in[15:4] == 12'h43);
+wire is_sn = is_ace && address_in == 16'h043F;
 
 wire is_ym = (((cart_flags[11] || XCTRL1[7]) && address_in[15:1] == 15'h230) && cart_cs);
 
@@ -283,12 +326,30 @@ wire is_ym = (((cart_flags[11] || XCTRL1[7]) && address_in[15:1] == 15'h230) && 
 // after the two POKEY windows, so it displaces neither. The chip decodes its own
 // registers from A4..A0, which is why the window has to be 32 byte aligned.
 // Enabled from the OSD; the a78 header's type field has no bits left.
-wire is_minnie = (minnie_en && address_in[15:5] == 11'b0000_0100_011 && cart_cs);
+// The OSD can also move the window to $0434-$0453, clear of the YM2151 at
+// $0460. The chip still wants offsets 0-31, so the base is subtracted from
+// A4..A0 (mod 32) before it reaches the chip.
+wire is_minnie = minnie_en && cart_cs && (minnie_alt
+	? (address_in >= 16'h0434 && address_in <= 16'h0453)
+	: (address_in[15:5] == 11'b0000_0100_011));
+wire [4:0] minnie_a = minnie_alt ? address_in[4:0] - 5'd20 : address_in[4:0];
 
-assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15] || minnie_active;
+assign external_audio = cart_flags[6] || cart_flags[10] || cart_flags[0] || is_covox || cart_flags[11] || cart_flags[15] || minnie_active || sn_enable;
 
 logic [3:0] address_index;
 assign address_index = address_in[15:12];
+
+// Only three of the four ACE windows transform, and the mode is the top two
+// bits of whatever was written to that window.
+always_comb begin
+	ace_swap = 2'd0;
+	if (is_ace) case (address_index)
+		4'hA: ace_swap = ace_a[7:6];
+		4'hC: ace_swap = ace_c[7:6];
+		4'hE: ace_swap = ace_e[7:6];
+		default: ;
+	endcase
+end
 
 // Address translation
 always_comb begin
@@ -335,6 +396,10 @@ always_comb begin
 					rom_address = {bank_map[address_index], address_in[13:0]};
 				3'd4: // souper
 					rom_address = souper_addr;
+				3'd5: // ACE. A transformed window also reads each 256 byte
+				      // chunk backwards; A8-A11 are left alone.
+					rom_address = {5'd0, bank_map[address_index], address_in[11:8],
+						address_in[7:0] ^ {8{|ace_swap}}};
 				default: ;
 			endcase
 		end
@@ -363,9 +428,33 @@ always_ff @(posedge clk_sys) begin
 		bank_reg <= 8'd0;
 		ram_bank <= 3'd0;
 		covox_reg <= '{8'd0, 8'd0, 8'd0, 8'd0};
+		ace_a <= 8'd2;
+		ace_c <= 8'd4;
+		ace_d <= 8'd5;
+		ace_e <= 8'd6;
+		ace_ram <= 3'd0;
 	end else if (~rw & cart_cs & pclk0) begin
 		if (is_covox) begin
-			covox_reg[address_in[1:0]] <= din;
+			// ACE has one Covox channel, so it feeds both sides rather than
+			// landing in the right-hand pair alone.
+			if (is_ace) begin
+				covox_reg[0] <= din;
+				covox_reg[1] <= din;
+			end else
+				covox_reg[address_in[1:0]] <= din;
+		end
+		if (is_ace) begin
+			// The board ANDs A0-A11 low for the hotspot, so only the window's
+			// base address latches a bank; $A001 is an ordinary ignored write.
+			if (~|address_in[11:0]) case (address_index)
+				4'hA: ace_a <= din;
+				4'hC: ace_c <= din;
+				4'hD: ace_d <= din;
+				4'hE: ace_e <= din;
+				default: ;
+			endcase
+			if (&address_in)
+				ace_ram <= din[2:0];
 		end
 		if (bank_type == 3'd0 && address_in[15:14] == 2'b10) begin//supergame bank
 			if (cart_flags[5]) begin
@@ -382,12 +471,31 @@ always_ff @(posedge clk_sys) begin
 end
 
 wire [14:0] bankset_ram_addr = {bankset_banks | (~rw & &address_in[15:14]), address_in[13:0]};
-assign cartram_addr = is_bankset_mem ? bankset_ram_addr : (souper_en ? souper_addr[17:0] : ({ram_bank, address_in[13:0]} & ram_mask));
+// ACE RAM is two 16K banks, and the $FFFF register can force A8 or A9 low so a
+// short pattern repeats across a wide MARIA fetch.
+wire [17:0] ace_ram_addr = {3'd0, ace_ram[0], address_in[13:10],
+	address_in[9] & ~ace_ram[2], address_in[8] & ~ace_ram[1], address_in[7:0]};
+assign cartram_addr = is_ace ? ace_ram_addr : (is_bankset_mem ? bankset_ram_addr : (souper_en ? souper_addr[17:0] : ({ram_bank, address_in[13:0]} & ram_mask)));
 wire   cartram_cs = (ram_cs || (~souper_ram_cs && souper_en));
 assign cartram_wr = cartram_cs && ~rw;
 assign cartram_rd = cartram_cs &&  rw;
 assign cartram_wrdata = din;
 assign ram_dout = cartram_data;
+
+// The ACE board permutes the EPROM's data lines on the way out, so one copy of
+// a sprite can be read back in the bit order a given MARIA read mode wants.
+// Taken from the four octal buffers in DATA_SWAP, one per mode.
+always_comb begin
+	case (ace_swap)
+		2'd1: ace_dout = {rom_din[1], rom_din[0], rom_din[3], rom_din[2],   // 160A
+				  rom_din[5], rom_din[4], rom_din[7], rom_din[6]};
+		2'd2: ace_dout = {rom_din[5], rom_din[4], rom_din[7], rom_din[6],   // 160B
+				  rom_din[1], rom_din[0], rom_din[3], rom_din[2]};
+		2'd3: ace_dout = {rom_din[0], rom_din[1], rom_din[2], rom_din[3],   // 320B/320D
+				  rom_din[4], rom_din[5], rom_din[6], rom_din[7]};
+		default: ace_dout = rom_din;
+	endcase
+end
 
 //CS Type:
 //00 - high impedance
@@ -395,34 +503,65 @@ assign ram_dout = cartram_data;
 //02 - POKEY
 //03 - RAM
 //04 - Banked ROM
+// dout_oe marks the lines the slot is actually driving. A window with no
+// hardware behind it clears the mask instead of handing a byte back, and the
+// bus keeps the charge it already had - top.sv holds that. dout only means
+// anything where the mask says so.
+//
+// The three parts that make sound but never answer a read are the reason to
+// keep the mask honest: the Covox DAC at $0430-$043F and the ACE board's
+// SN76489AN at $043F have no data pins at all, and the XM control registers at
+// $0470-$047F are write only here. None of them appear below, on purpose.
+// POKEY and the YM2151 do drive, and Minnie brings its own enable.
 always_comb begin
+	dout = rom_din;
+	dout_oe = '0;
+
 	case(hardware_map[address_index])
-		3'd0: dout = open_bus;            // High Impedance
-		3'd1, 3'd4: dout = rom_din; // ROM Data
-		3'd2: dout = pokey4k_dout;  // POKEY
-		3'd3: dout = ram_dout;      // RAM Data
-		default: dout = open_bus;
+		3'd1, 3'd4: begin dout = is_ace ? ace_dout : rom_din; dout_oe = '1; end // ROM Data
+		3'd2: begin dout = pokey4k_dout; dout_oe = '1; end // POKEY
+		3'd3: begin dout = ram_dout; dout_oe = '1; end     // RAM Data
+		default: ;                                         // High impedance
 	endcase
 
-	if (is_ym)
+	if (is_ym) begin
 		dout = ym_dout;
-	if (hsc_rom_cs)
+		dout_oe = '1;
+	end
+	if (hsc_rom_cs) begin
 		dout = hsc_rom_dout;
-	if (hsc_ram_cs)
+		dout_oe = '1;
+	end
+	if (hsc_ram_cs) begin
 		dout = hsc_ram_dout;
-	if (is_pokey_450 || is_pokey_800 || (is_pokey_4k && ~pokey4k_wo))
+		dout_oe = '1;
+	end
+	// A write-only $4000 window belongs to the banked ROM the case above
+	// selected, so POKEY only takes the read back when it is not.
+	if (is_pokey_450 || is_pokey_800 || (is_pokey_4k && ~pokey4k_wo)) begin
 		dout = pokey4k_dout;
-	if (is_pokey_440)
+		dout_oe = '1;
+	end
+	if (is_pokey_440) begin
 		dout = pokey2_dout;
-	if (is_minnie)
+		dout_oe = '1;
+	end
+	if (is_minnie) begin
 		dout = minnie_dout;
+		dout_oe = {8{minnie_doe}};
+	end
 	if (souper_en) begin
 		if (~souper_ram_cs)
 			dout = ram_dout;
 		else
 			dout = rom_din;
+		dout_oe = '1;
 	end
 
+	// Nothing in the slot drives while the CPU has the bus, or while a part on
+	// the board rather than the cartridge is the one selected.
+	if (~cart_cs || ~rw)
+		dout_oe = '0;
 end
 
 logic [3:0] ch0, ch1, ch2, ch3, ch0_2, ch1_2, ch2_2, ch3_2;
@@ -463,12 +602,12 @@ minnie the_mouse (
 	.ph1_en    (minnie_ph1),
 	.ph2_en    (pclk0),
 	.reset     (reset),
-	.a         (address_in[4:0]),
+	.a         (minnie_a),
 	.cs        (is_minnie),
 	.rw        (rw),
 	.d_in      (din),
 	.d_out     (minnie_dout),
-	.d_oe      (),
+	.d_oe      (minnie_doe),
 	.sample    (),
 	.sample_en (),
 	.aud       (minnie_aud)
@@ -489,6 +628,48 @@ end
 // Minnie has one output pin, so this is mono. top.sv mixes it into both
 // channels.
 assign minnie_audio = minnie_active ? minnie_aud : 16'd0;
+
+// SN76489AN on the ACE board at $043F, strobed the way its CPLD does it: the
+// byte is caught in a 74273 and /WE+/CE stay low until READY comes back, so
+// the chip always sees the bus held through its 32-clock transfer. SN_ENABLE
+// latches on the first strobe and closes the switch on the chip's output;
+// until then its power-on noise never reaches the console. The chip runs from
+// the board's own 3.579545 MHz resonator, which is clk_sys/4 here.
+logic [1:0]  sn_clk_div;
+logic [1:0]  sn_hold;       // two clk_sys of /CE, long enough for READY to take over
+logic [7:0]  sn_d;
+logic        sn_enable, sn_ready;
+wire         sn_write = is_sn && ~rw && cart_cs && pclk0;
+wire         sn_ce_n  = ~(|sn_hold || ~sn_ready);
+wire [13:0]  sn_aud;
+
+always_ff @(posedge clk_sys) begin
+	sn_clk_div <= sn_clk_div + 2'd1;
+	if (reset || ~is_ace) begin
+		sn_hold   <= 2'd0;
+		sn_enable <= 1'b0;
+	end else begin
+		sn_hold <= {sn_hold[0], sn_write};
+		if (sn_write) sn_enable <= 1'b1;
+	end
+	if (sn_write) sn_d <= din;
+end
+
+sn76489 the_sn (
+	.clk      (clk_sys),
+	.clk_en   (sn_clk_div == 2'd3),
+	.reset    (reset || ~is_ace),
+	.ce_n     (sn_ce_n),
+	.we_n     (sn_ce_n),
+	.d        (sn_d),
+	.ready    (sn_ready),
+	.ready_oe (),
+	.aud      (sn_aud)
+);
+
+// Four channels at full level reach the TIA's ceiling, 32760, so TIA plus the
+// ACE Covox plus this stays well inside top.sv's 17 bit mix.
+assign sn_audio = sn_enable ? {1'b0, sn_aud, 1'b0} : 16'd0;
 
 logic [5:0] keyboard_scan;
 logic [1:0] keyboard_response;

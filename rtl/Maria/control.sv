@@ -28,9 +28,9 @@ module control (
 	input  logic [15:0]      AB,
 	input  logic [7:0]       DB_in,
 	output logic [7:0]       DB_out,
+	output logic [7:0]       DB_out_oe,
 	input  logic             RW,
 	input  logic             ABEN,
-	input  logic             noslow,
 
 	input  logic             drive_AB,
 
@@ -61,7 +61,7 @@ module control (
 
 	// Internal Memory Mapped Registers
 	logic [7:0]              ZPH, ZPL;
-	assign sel_slow_clock = ~noslow && (~maria_en ? 1'b1 : (cs_tia || cs_riot));
+	assign sel_slow_clock = ~maria_en ? 1'b1 : (cs_tia || cs_riot);
 
 	assign ZP = {ZPH, ZPL};
 
@@ -103,19 +103,20 @@ module control (
 	end
 	assign cram_select = cs_maria && ~RW && (pclkp && ~old_phase) && (|AB[1:0] || AB[4:0] == 5'h00);
 
+	// CTRL is two stages deep. A write opens the first for phase 2, and phase
+	// 1 opens the second, so a byte written to $3C reaches MARIA's control
+	// signals half a cycle later - at the start of the phase 1 that follows
+	// the write. Consecutive writes, as a read-modify-write on $3C makes,
+	// each get their own phase 1.
 	logic [7:0] ctrl_1;
 	logic old_phase;
-	logic ctrl_write;
 	wire [4:0] color_ram_index [32] = '{5'd0,
 			5'd1,  5'd2,  5'd3,  5'd0, 5'd4,  5'd5,  5'd6,  5'd0,
 			5'd7,  5'd8,  5'd9,  5'd0, 5'd10, 5'd11, 5'd12, 5'd0,
 			5'd13, 5'd14, 5'd15, 5'd0, 5'd16, 5'd17, 5'd18, 5'd0,
 			5'd19, 5'd20, 5'd21, 5'd0, 5'd22, 5'd23, 5'd24};
 	always_ff @(posedge clk_sys) begin
-		if (mclk1)
-			ctrl_write <= ~RW && cs_maria && AB[5:0] == 6'h3c;
-		 if (pclkp) begin
-			//ctrl <= ctrl_1;
+		if (pclkp) begin
 			wsync <= 1'b0;
 			if (~RW && cs_maria) begin
 				case(AB[5:0])
@@ -128,15 +129,9 @@ module control (
 					6'h3c: ctrl_1 <= DB_in;
 					default: if (cram_select) color_map[color_ram_index[AB[4:0]]] <= DB_in;
 				endcase
-			end else if (RW && cs_maria) begin
-				// Maria reads will return 0 if invalid. Not open bus or anything else.
-				if (AB[5:0] == 6'h28)
-					DB_out_r <= status_read;
-				else
-					DB_out_r <= 8'h0;
 			end
-		end else if (mclk0 && ~ctrl_write)
-			ctrl <= ctrl_1;
+		end else if (mclk0)
+			ctrl <= ctrl_1; // second stage, open for phase 1
 
 		if (mclk0) begin
 			old_phase <= pclkp;
@@ -149,7 +144,6 @@ module control (
 			ctrl <= bypass_bios ? 8'h60 : '1;
 			color_map <= 200'b0; // FIXME: convert this to RAM?
 			char_base <= 8'b0;
-			DB_out_r <= 0;
 			// NTSC measured off the real BIOS at handoff; the PAL arm is
 			// unmeasured and left as it was.
 			{ZPH,ZPL} <= bypass_bios ? (pal ? {8'h27, 8'h30} : {8'h1F, 8'h84}) : 8'd0;
@@ -161,10 +155,14 @@ module control (
 	// part way through that phase reads one cycle stale - MSTAT's live VBLANK
 	// bit is the one register where that shows. rtl/TIA.sv drives its pins the
 	// same way for the same reason.
-	logic [7:0] DB_out_r;
+	//
+	// MSTAT is one pass transistor from VBLANK onto D7, and it is the only
+	// read driver MARIA has - the CTRL register and the colour map are
+	// write-only cells with no path back to the bus. So D6-D0 of an MSTAT
+	// read, and every other MARIA address, leave the bus holding what it
+	// already had.
 	always_comb begin
-		DB_out = DB_out_r;
-		if (RW && cs_maria)
-			DB_out = (AB[5:0] == 6'h28) ? status_read : 8'h00;
+		DB_out = status_read;
+		DB_out_oe = (RW && cs_maria && AB[5:0] == 6'h28) ? 8'h80 : 8'h00;
 	end
 endmodule

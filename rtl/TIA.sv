@@ -1569,6 +1569,15 @@ module video_stabilize
 	localparam pal_vb_end = 9'd23; // 23
 	localparam ntsc_vb_start = 9'd240 + ntsc_vb_end; //9'd262;//9'd243;
 	localparam pal_vb_start = 9'd288 + pal_vb_end; //9'd312;//9'd288;
+	// Region detection, after Stella's FrameLayoutDetector. A 2600 image carries
+	// no region field, so the frame length the program produces is the only
+	// evidence - but one frame is not evidence. Frames are scored across
+	// 262..312 lines, odd counts count half because a real PAL field is even,
+	// startup and impossible frames are discarded, and the sums decide once.
+	localparam [8:0] lines_absurd   = 9'd412;  // pal + 100, Stella's own cutoff
+	localparam [5:0] score_span     = 6'd50;   // 312 - 262
+	localparam [5:0] garbage_frames = 6'd8;    // skipped while the kernel settles
+	localparam [5:0] detect_frames  = 6'd40;   // scored before the verdict stands
 
 
 	logic [8:0] v_count, total_lines, vsync_line, vsync_end_line;
@@ -1578,6 +1587,10 @@ module video_stabilize
 	logic [7:0] vsync_count, vblank_count, lines_from_vs;
 	logic [7:0] dot_count = 0;
 	logic vsync_emulate;
+	logic pal_mode;
+	logic region_done;
+	logic [5:0] region_frames;
+	logic [11:0] pal_sum, ntsc_sum;
 
 //	wire vblank_start = ~old_vblank && vblank_in;
 //	wire vblank_end   = old_vblank && ~vblank_in;
@@ -1591,7 +1604,17 @@ module video_stabilize
 	assign vblank = |mode ? vblank_in : vblank_en;
 	assign vsync = |mode ? vsync_in : vsync_en;
 	assign f1 = 1'b0; // |mode ? 1'b0 : midline_sync; // I could never make this work productively
-	assign auto_pal = total_lines >= 290;
+	// Decided once and then frozen. region_select drives the PLL, a PLL
+	// reconfiguration resets the core, and that restarts the very video measured
+	// here - so the region may move at most once per loaded ROM. `reset` covers
+	// the download, which is what re-arms detection for the next cart.
+	assign auto_pal = pal_mode;
+
+	// The frame that just ended is v_count lines long: 0 at 262 or below, the
+	// full span at 312 or above, proportional between, halved when odd.
+	wire [8:0] over_ntsc = (v_count > 9'd262) ? (v_count - 9'd262) : 9'd0;
+	wire [5:0] score_raw = (over_ntsc >= {3'b0, score_span}) ? score_span : over_ntsc[5:0];
+	wire [5:0] frame_score = v_count[0] ? {1'b0, score_raw[5:1]} : score_raw;
 
 	always_ff @(posedge clk) begin
 		old_hblank <= hblank_in;
@@ -1651,6 +1674,20 @@ module video_stabilize
 			v_count <= 0;
 			total_lines <= v_count;
 
+			if (!region_done) begin
+				region_frames <= region_frames + 1'd1;
+				// Startup frames and impossible ones are not evidence.
+				if (region_frames >= garbage_frames && v_count <= lines_absurd) begin
+					pal_sum  <= pal_sum  + {6'b0, frame_score};
+					ntsc_sum <= ntsc_sum + {6'b0, (score_span - frame_score)};
+				end
+				// One frame past the window, so the last score is counted.
+				if (region_frames == garbage_frames + detect_frames) begin
+					pal_mode <= pal_sum > ntsc_sum;
+					region_done <= 1'b1;
+				end
+			end
+
 			// if (dot_count > 15 && dot_count < 145) // Vsync outside of hblank can be considered invoking interlaced resolutions
 			// 	midline_sync <= 1;
 			// else
@@ -1664,6 +1701,11 @@ module video_stabilize
 			vsync_line <= 0;
 			vsync_override <= 0;
 			total_lines <= 9'd262;
+			pal_mode <= 1'b0;
+			region_done <= 1'b0;
+			region_frames <= 6'd0;
+			pal_sum <= 12'd0;
+			ntsc_sum <= 12'd0;
 			v_count <= 0;
 			vblank_en <= 1;
 			vsync_en <= 0;
@@ -1685,7 +1727,8 @@ module TIA
 	output logic    rdy,
 	input  [5:0]    addr,
 	input  [7:0]    d_in,
-	output [7:0]    d_out,
+	output logic [7:0] d_out,
+	output logic [7:0] d_out_oe, // Which of D7:D0 the chip is actually driving
 	input  [3:0]    i,     // On real hardware, these would be ADC pins. i0..3
 	output [3:0]    i_out,
 	input           i4,
@@ -1718,7 +1761,6 @@ module TIA
 	// same signals.
 	output          phi0_gen,
 	output logic    phi1_gen,
-	input [7:0]     open_bus,
 	input           is_7800,
 	input           decomb,
 	output logic    cart_ce,
@@ -1765,7 +1807,6 @@ assign BLK_n = blank;
 assign sync = ~(hsync || vsync);
 assign vsync_o = wreg[VSYNC][1];
 assign vblank_o = wreg[VBLANK][1];
-assign d_out[5:0] = open_bus[5:0];
 assign cart_ce = oclk.edge_p2;
 assign motck = ~oclk.clock & ~hblank_d;
 assign clkp = ~oclk.clock;
@@ -1892,18 +1933,28 @@ end
 // The bus drivers are asynchronous. Their stored sources live in rreg, but
 // registering the pin value on phase 2 makes it arrive after the CPU closes
 // its data latch on that same edge.
+// D5:D0 have no drivers at all in the part, and the collision registers and
+// the trigger inputs reach only D7, so most reads leave part of the byte to
+// whatever charge the bus already carries. d_out_oe says which bits are real;
+// the system bus fills the rest.
 always_comb begin
-	d_out = open_bus;
+	d_out = 8'h00;
+	d_out_oe = 8'h00;
 	if (cs && RW_n) begin
-		if (addr[3:0] == INPT4 && ~wreg[VBLANK][6])
+		if (addr[3:0] == INPT4 && ~wreg[VBLANK][6]) begin
 			d_out[7] = i4;
-		else if (addr[3:0] == INPT5 && ~wreg[VBLANK][6])
+			d_out_oe = 8'b1000_0000;
+		end else if (addr[3:0] == INPT5 && ~wreg[VBLANK][6]) begin
 			d_out[7] = i5;
-		else if (~&addr[3:1]) begin
-			if (addr[3] || addr[3:0] == CXBLPF)
+			d_out_oe = 8'b1000_0000;
+		end else if (~&addr[3:1]) begin // $xE and $xF decode to nothing
+			if (addr[3] || addr[3:0] == CXBLPF) begin
 				d_out[7] = rreg[addr[3:0]][7];
-			else
+				d_out_oe = 8'b1000_0000;
+			end else begin
 				d_out[7:6] = rreg[addr[3:0]][7:6];
+				d_out_oe = 8'b1100_0000;
+			end
 		end
 	end
 end

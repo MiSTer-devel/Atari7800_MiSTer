@@ -12,6 +12,10 @@ module arm_host
 (
 	input  logic        clk_arm,
 	input  logic        reset_arm,
+	// Held low while the core is paused, so the ARM stops with the 6507 rather
+	// than running on against a frozen machine. The core's reset branch runs
+	// ahead of its clock enable, so a reset still lands while paused.
+	input  logic        ce,
 
 	input  logic        halt_req,
 	output logic        halted,
@@ -39,10 +43,23 @@ module arm_host
 	output logic        state_ready,
 	input  logic        state_commit
 );
-	arm7tdmi_core arm_cpu (
+	// MUL_RETIRE_STAGE makes every multiply one internal cycle slower than the
+	// real ARM7TDMI - 1S+(m+1)I where the manual says 1S+mI. The inaccuracy is
+	// deliberate and it is bought, not conceded: without it the multiply's
+	// retire decision gates the instruction issue, the forwarding network and
+	// the CPSR flag read from one register with thousands of loads, and that
+	// register launches most of the clk_arm timing failures.
+	//
+	// The cycle is not free. top.sv stalls the 6507 for the whole ARM call, so
+	// the ARM's time is the game's time and a slower multiply is a slower
+	// frame. It is affordable: one cycle per multiply, and the ARM cartridge
+	// corpus still matches the Stella oracle write for write. The parameter is
+	// off by default in the shared core, where other cores need the manual's
+	// numbers. Do not copy this line into one of them.
+	arm7tdmi_core #(.MUL_RETIRE_STAGE(1'b1)) arm_cpu (
 		.clk            (clk_arm),
 		.reset          (reset_arm),
-		.ce             (1'b1),
+		.ce             (ce),
 		.irq_n          (1'b1),
 		.fiq_n          (1'b1),
 		.halt_req,

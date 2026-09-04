@@ -8,6 +8,8 @@ module arm_mapper_subsystem
 (
 	input  logic        clk_sys,
 	input  logic        reset_sys,
+	input  logic        pal,
+	input  logic        ddr_timeout,
 	input  logic        mapper_reset,
 	input  logic        load_start,
 	input  logic [24:0] load_addr,
@@ -78,6 +80,9 @@ module arm_mapper_subsystem
 
 	// ARM7TDMI bus, from arm_host.
 	output logic        halt_req,
+	// The console's run enable, the same one arm_host takes. The memory
+	// system must stop with the CPU or it retires an answer nobody took.
+	input  logic        mem_ce,
 	input  logic        mem_req,
 	output logic        mem_ready,
 	output logic        mem_abort,
@@ -152,6 +157,8 @@ module arm_mapper_subsystem
 
 	arm_mapper_memory memory (
 		.clk_sys,
+		.pal,
+		.ddr_timeout,
 		.reset_sys,
 		.load_start,
 		.load_addr,
@@ -180,7 +187,7 @@ module arm_mapper_subsystem
 		.sample_busy,
 		.sample_done,
 		.sample_data,
-		.mem_ce          (1'b1),
+		.mem_ce,
 		.mem_req,
 		.mem_addr,
 		.mem_write,

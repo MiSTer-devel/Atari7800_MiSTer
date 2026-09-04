@@ -6,16 +6,16 @@
 #
 # It is also safe to source from the standalone probe
 # (.agents/build/arm7tdmi_probe/arm7tdmi_probe.sdc): everything below is
-# guarded on clk_sys existing, and in the probe it does not.
+# guarded on emu|pll's clk_arm existing, and in the probe it does not.
 #
 #
 # CLOCKS
 #
 # One PLL (emu|pll) makes every clock the core uses, from a 572.65625 MHz VCO:
 #
-#   outclk_0  general[0]  VCO/40  14.31641 MHz  69.847 ns  clk_sys
-#   outclk_1  general[1]  VCO/10  57.26563 MHz  17.462 ns  clk_vid
-#   outclk_3  general[3]  VCO/8   71.58203 MHz  13.969 ns  clk_arm
+#   outclk_0  counter[0]  VCO/40  14.31641 MHz  69.847 ns  clk_sys
+#   outclk_1  counter[1]  VCO/10  57.26563 MHz  17.462 ns  clk_vid
+#   outclk_3  counter[3]  VCO/8   71.58203 MHz  13.969 ns  clk_arm
 #
 # clk_arm is exactly 5 x clk_sys. sys/sys_top.sdc calls derive_pll_clocks, so
 # the clocks already exist; it also puts all four emu PLL outputs in one
@@ -44,6 +44,11 @@
 #                 so the multiplier is never on the forwarding loop - the fit
 #                 that briefly had it there measured -3.841 ns, the campaign's
 #                 low. The old single-edge 32x32 product no longer exists.
+#                 This core sets MUL_RETIRE_STAGE, so the retire hands off to
+#                 MEM_DONE and the next instruction issues from there - one
+#                 deliberate extra internal cycle per multiply, bought to keep
+#                 the retire decision off the issue path. Either way it is one
+#                 cycle between registers, so nothing to constrain.
 #   MEM_ACCESS    entered and finished on consecutive edges when the memory
 #                 answers in its request cycle; loads then spend one MEM_DONE
 #                 edge (the manual's trailing I cycle) before resuming.
@@ -89,6 +94,12 @@
 # the core (a forward computed on a non-completing cycle is discarded, so the
 # qualifier was never needed), which shortens that series path by the bus
 # qualifier's share; the mapper's decode itself still needs RTL, not SDC.
+# Decision 0083 (same day) is that RTL on the far side of the seam: the
+# adapters' answer muxes are one-hot and top.sv ORs them instead of muxing on
+# the cartridge profile, and the call controller's state_index is a register.
+# Nothing there crosses clocks: the new flops (live, state_index_q) are
+# clk_arm to clk_arm, and souper_profile left the mem_rdata cone entirely, so
+# this file gains no exception from it.
 #
 #
 # WHAT DOES NEED CONSTRAINING: THE CARTRIDGE SELECTION
@@ -137,9 +148,35 @@
 # only 210 paths, every one of them a held payload or a toggle entering the
 # first flop of a two-flop synchronizer, and the worst passes by 7.772 ns.
 
-if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]] > 0} {
+# Finding emu|pll's clk_arm. altera_pll names its generated clocks after the
+# IP variant it was built as, so the name changes when the IP is retyped:
+#
+#   pll_type "General"    ...|altera_pll_i|general[3].gpll~PLL_OUTPUT_COUNTER|divclk
+#   pll_type "Cyclone V"  ...|altera_pll_i|cyclonev_pll|counter[3].output_counter|divclk
+#
+# The region retune made emu|pll "Cyclone V"/"Reconfigurable" and renamed every
+# output. Both spellings are matched, and a whole-core miss is reported: the
+# previous single-pattern guard wrapped the whole file, so the rename turned the
+# false path below into a no-op and nothing said a word. In the standalone probe
+# emu|pll does not exist at all, which is not a miss - that stays silent.
+proc arm7_pll_divclk {n} {
+	foreach pat [list \
+		"*|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[$n\].output_counter|divclk" \
+		"*|pll|pll_inst|altera_pll_i|general\[$n\].*|divclk"] {
+		set c [get_clocks -nowarn $pat]
+		if {[get_collection_size $c] > 0} { return $c }
+	}
+	return {}
+}
 
-	set arm7_clk_arm [get_clocks {*|pll|pll_inst|altera_pll_i|general[3].*|divclk}]
+set arm7_clk_arm [arm7_pll_divclk 3]
+
+if {[get_collection_size $arm7_clk_arm] == 0} {
+	if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|*|divclk}]] > 0} {
+		post_message -type critical_warning \
+			"arm7tdmi.sdc: emu|pll clk_arm not found; the cartridge selection is unrelaxed"
+	}
+} else {
 
 	# The cartridge selection reaches clk_arm whenever it likes, and nothing on
 	# the far side sequences it, so cut it.
@@ -184,5 +221,6 @@ if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|genera
 	# *_sync1 would let the toggle route arbitrarily fast while the payload
 	# stays bounded, which inverts the order the handshake depends on.
 
-	unset arm7_clk_arm arm7_config arm7_pattern
+	unset arm7_config arm7_pattern
 }
+unset arm7_clk_arm

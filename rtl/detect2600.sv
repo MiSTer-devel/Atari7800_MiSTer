@@ -1,8 +1,10 @@
-typedef enum bit[4:0] { 
+// The OSD list follows this order, so ELF (never selectable) stays last.
+typedef enum bit[5:0] {
 	BANK00, BANKF8, BANKF6, BANKFE, BANKE0,   BANK3F,   BANKF4,  BANKP2,
 	BANKFA, BANKCV, BANK2K, BANKUA, BANKE7,   BANKF0,   BANK32,  BANKAR,
 	BANK3E, BANKSB, BANKWD, BANKEF, BANKJANE, BANKDPCP, BANKCTY, BANKCDF,
-	BANKBUS, BANKFA2, BANKELF, BANKEND
+	BANKBUS, BANKFA2, BANK0840, BANKFC, BANKDF, BANKMC2K, BANKMC4K, BANKMC8K,
+	BANKELF, BANKEND
 } bss_type ;
 
 module detect2600
@@ -14,7 +16,7 @@ module detect2600
 	input load_end,
 	input [31:0] cart_size,
 	input [7:0] data,
-	output reg [4:0] force_bs,
+	output reg [5:0] force_bs,
 	output reg sc,
 	output reg [2:0] mapper_revision,
 	output reg cdf_ldx,
@@ -235,6 +237,10 @@ always @(posedge clk) begin
 			mapper_revision <= {1'b0, bus_revision};
 		end
 		else if (cart_size=='d32768 && fa2_padding_zero && !has_sc) force_bs<=BANKFA2;
+		else if ((cart_size=='d131072 || cart_size=='d262144) && tail_dfbf) begin
+			force_bs<=BANKDF;
+			sc <= tail_dfbf_sc;
+		end
 		else if (hasMatchSB && cart_size>='d131072) force_bs<=BANKSB;
 		else if (hasMatchEF && cart_size=='d65536 ) begin
 			force_bs<=BANKEF;
@@ -243,25 +249,42 @@ always @(posedge clk) begin
 		else if (hasMatchCV) force_bs<=BANKCV;
 		else if (hasMatchJANE && cart_size=='d16384) force_bs<=BANKJANE;
 		else if (hasMatchE7) force_bs<=BANKE7;
+		else if (cart_size == 'h2003) begin // WD dump with 1K banks 2 and 3 swapped
+			force_bs<=BANKWD;
+			mapper_revision <= 3'd1;
+		end
 		else if (cart_size == 'h2000 && hasMatchWD ) force_bs<=BANKWD; //  8k
-		else if (cart_size == 'h2000 && hasMatchUA ) force_bs<=BANKUA; //  8k and less
+		else if (cart_size == 'h2000 && hasMatchUA ) begin //  8k
+			force_bs<=BANKUA;
+			mapper_revision <= {2'd0, ua_mickey};
+		end
+		else if (cart_size == 'h2000 && hasMatch0840) force_bs<=BANK0840;
+		else if (cart_size == 'h2000 && hasMatchFC) force_bs<=BANKFC;
 		else if (cart_size == 'h1800) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
 		else if (cart_size == 'h2100) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
 		else if (cart_size == 'h4200) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
 		else if (cart_size == 'h6300) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
 		else if (cart_size == 'h8400) force_bs<=BANKAR; //  multiple of 8448 is cassette  AR
 		else if (cart_size <= 'h0800) force_bs<=BANK2K; //  2k and less
-		else if (cart_size <= 'h1000) force_bs<=BANK00; //  4k and less
+		else if (cart_size <= 'h1000) begin //  4k and less
+			if (has_sc && sc4k_sig) begin
+				force_bs<=BANK00;
+				sc <= 1'b1;
+			end else
+				force_bs <= hasMatchFC ? BANKFC : BANK00;
+		end
 		else if (cart_size <= 'h2000) begin
 			force_bs<=BANKF8; //  8k and less
 			sc <= has_sc;
 		end
 		else if (cart_size >= 'h2800 && cart_size <= 'h2900) force_bs<=BANKP2; // 10k+256 and less, should be > 10k < 10k+256?
 		else if (cart_size <= 'h3000) force_bs<=BANKFA; // 12k and less
+		else if (cart_size == 'h4000 && hasMatchFC) force_bs<=BANKFC;
 		else if (cart_size <= 'h4000) begin
 			force_bs<=BANKF6; // 16k and less
 			sc <= has_sc;
 		end
+		else if (cart_size == 'h8000 && hasMatchFC) force_bs<=BANKFC;
 		else if (cart_size <= 'h8000) begin
 			force_bs<=BANKF4; // 32k and less
 			sc <= has_sc;
@@ -1023,6 +1046,113 @@ bool CartDetector::isProbablyCV(const ByteBuffer& image, size_t size)
 
 wire hasMatchUA_0 , hasMatchUA_1 , hasMatchUA_2 , hasMatchUA_3 , hasMatchUA_4 , hasMatchUA_5 , hasMatchUA_6 , hasMatchUA_7 , hasMatchUA_8 , hasMatchUA_9 , hasMatchUA_10 , hasMatchUA_11;
 wire hasMatchUA = hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_5 | hasMatchUA_6 | hasMatchUA_7 | hasMatchUA_8 | hasMatchUA_9 | hasMatchUA_10 | hasMatchUA_11;
+// Mickey (Digivision) has the two UA hotspots swapped, and LDA $2C0 is the
+// only UA access it makes.
+wire ua_mickey = hasMatchUA_5 & ~(hasMatchUA_0 | hasMatchUA_1 | hasMatchUA_2 | hasMatchUA_3 | hasMatchUA_4 | hasMatchUA_6 | hasMatchUA_7 | hasMatchUA_8 | hasMatchUA_9 | hasMatchUA_10 | hasMatchUA_11);
+
+//----------------------------
+//  0840 detector
+//----------------------------
+// Econobanking reads $0800 or $0840 (or NOPs through them) at least twice.
+wire hasMatch0840_0, hasMatch0840_1, hasMatch0840_2, hasMatch0840_3, hasMatch0840_4;
+wire hasMatch0840 = hasMatch0840_0 | hasMatch0840_1 | hasMatch0840_2 | hasMatch0840_3 | hasMatch0840_4;
+
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'hAD, 8'h00, 8'h08 }),  // LDA $0800
+	.needmatches(8'd2)
+	) match_bytes_0840_0(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatch0840_0)
+);
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'hAD, 8'h40, 8'h08 }),  // LDA $0840
+	.needmatches(8'd2)
+	) match_bytes_0840_1(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatch0840_1)
+);
+match_bytes #(
+	.num_bytes(8'd3),
+	.pattern({ 8'h2C, 8'h00, 8'h08 }),  // BIT $0800
+	.needmatches(8'd2)
+	) match_bytes_0840_2(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatch0840_2)
+);
+match_bytes #(
+	.num_bytes(8'd4),
+	.pattern({ 8'h0C, 8'h00, 8'h08, 8'h4C }),  // NOP $0800; JMP
+	.needmatches(8'd2)
+	) match_bytes_0840_3(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatch0840_3)
+);
+match_bytes #(
+	.num_bytes(8'd4),
+	.pattern({ 8'h0C, 8'hFF, 8'h0F, 8'h4C }),  // NOP $0FFF; JMP
+	.needmatches(8'd2)
+	) match_bytes_0840_4(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatch0840_4)
+);
+
+//----------------------------
+//  FC detector
+//----------------------------
+// Amiga Power Play: STA $1FF8 / $FFF8 then $FFF9 and the $FFFC trigger.
+wire hasMatchFC_0, hasMatchFC_1, hasMatchFC_2;
+wire hasMatchFC = hasMatchFC_0 | hasMatchFC_1 | hasMatchFC_2;
+
+match_bytes #(
+	.num_bytes(8'd6),
+	.pattern({ 8'h8D, 8'hF8, 8'h1F, 8'h4A, 8'h4A, 8'h8D }),  // STA $1FF8; LSR; LSR; STA
+	.needmatches(8'd1)
+	) match_bytes_FC_0(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatchFC_0)
+);
+match_bytes #(
+	.num_bytes(8'd6),
+	.pattern({ 8'h8D, 8'hF8, 8'hFF, 8'h8D, 8'hFC, 8'hFF }),  // STA $FFF8; STA $FFFC
+	.needmatches(8'd1)
+	) match_bytes_FC_1(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatchFC_1)
+);
+match_bytes #(
+	.num_bytes(8'd6),
+	.pattern({ 8'h8C, 8'hF9, 8'hFF, 8'hAD, 8'hFC, 8'hFF }),  // STY $FFF9; LDA $FFFC
+	.needmatches(8'd1)
+	) match_bytes_FC_2(
+	.enable(enable),
+	.clk(clk),
+	.reset(reset),
+	.stream(match_next),
+	.hasMatch(hasMatchFC_2)
+);
 
 match_bytes #(
 	.num_bytes(8'd3),
@@ -1222,6 +1352,28 @@ bool CartDetector::isProbablySC(const ByteBuffer& image, size_t size)
 // grab and save the CRC for the first 128 bytes
 // each 4k check 128 bytes, and fail if CRC doesn't match
 reg [31:0] sc_crc0,sc_crc1;
+// DF and BF images name their scheme in the last 8 bytes: DFDF, DFSC, BFBF or
+// BFSC. A 4K Superchip image puts SC at $FFA.
+reg tail_dfbf, tail_dfbf_sc, sc4k_sig;
+wire [31:0] tail_word = match_next[31:0];
+wire tail_zone = load_addr + 25'd5 >= cart_size[24:0];
+always @(posedge clk) begin
+	if (load_start) begin
+		tail_dfbf <= 1'b0;
+		tail_dfbf_sc <= 1'b0;
+		sc4k_sig <= 1'b0;
+	end else if (enable) begin
+		if (tail_zone && (tail_word == "DFDF" || tail_word == "BFBF"))
+			tail_dfbf <= 1'b1;
+		if (tail_zone && (tail_word == "DFSC" || tail_word == "BFSC")) begin
+			tail_dfbf <= 1'b1;
+			tail_dfbf_sc <= 1'b1;
+		end
+		if (load_addr == 25'h0FFB && match_next[15:0] == "SC")
+			sc4k_sig <= 1'b1;
+	end
+end
+
 reg has_sc;
 wire [11:0] sc_offset = load_addr[11:0];
 wire sc_enable = load_valid;

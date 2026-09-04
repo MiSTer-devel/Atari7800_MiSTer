@@ -65,6 +65,11 @@
 // Two cycles is what DMA.sv and souper.v independently assume, and moving
 // that edge breaks both. Treat it as fitted, not established.
 //
+// What is pinned is that the two are equal, so the core loses exactly the
+// cycles MARIA asked for. general_tests test 15 counts a fixed loop across
+// the non vblank region and wants 556; an entry of two cycles against a
+// release of one reads 561, one extra loop for every five scanlines.
+//
 // THE TWO PATHS
 //
 // On the 800, ANTIC drives two separate things: RDY into the CPU's own RDY
@@ -141,19 +146,28 @@ module sally (
 
 	logic core_data_oe;
 
-	// HALT gives the core two cycles of grace and then stops it dead.
+	// HALT gives the core two cycles of grace and then stops it dead for as
+	// long as MARIA asked for. The window is the halt shifted two cycles, not
+	// the halt made shorter:
 	//
-	//   cycle     0   1   2   3  ...  m-1   m   m+1
+	//   cycle     0   1   2   3  ...  m-1   m   m+1  m+2
 	//   halt_n    \___________________________/
-	//   bus_off           |===============|          halt_s & halt_bus
-	//   held              |===============|          the same window
+	//   bus_off           |=======================|      halt_bus
+	//   held              |=======================|      the same window
 	//
 	// Cycles 0 and 1 are still ours, which is what the flip-flop pair is for:
 	// a write already under way reaches the bus. MARIA takes over on cycle 2,
-	// which is what DMA.sv means by "ultimately it takes 2 cpu
-	// cycles to start up", and hands it back on m. Measured on the whole-core
-	// model, MARIA drives the address bus over cycles 2..3 of a four cycle
-	// halt, so both margins are clear.
+	// which is what DMA.sv means by "ultimately it takes 2 cpu cycles to start
+	// up", and drops HALT on m; the core takes the same two cycles to come
+	// back, so it loses exactly as many cycles as HALT was low. Over m+1 and
+	// m+2 neither side drives and the address lines hold their charge, which
+	// the top level already resolves.
+	//
+	// The count is what fixes the release edge. MARIA halts once per non
+	// vblank scanline, 242 of them a frame, so a release one cycle early hands
+	// the CPU 242 cycles a frame that hardware keeps. general_tests test 15
+	// counts a 46 cycle loop across the non vblank region and wants 556; an
+	// early release reads 561.
 	//
 	// RDY is not what stops the core here, and that is the one place this
 	// departs from the 800 board it copies. RDY holds a read and never a
@@ -172,7 +186,7 @@ module sally (
 	// this replaces did, and it is why nothing here has to reason about what
 	// DL captured while MARIA had the bus.
 	logic bus_off;
-	assign bus_off   = halt_s & halt_bus;
+	assign bus_off   = halt_bus;
 
 	assign addr_oe   = ~bus_off;
 	assign rw_oe     = ~bus_off;

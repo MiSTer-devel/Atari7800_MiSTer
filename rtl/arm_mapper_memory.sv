@@ -19,6 +19,12 @@ module arm_mapper_memory
 	output logic        load_wait,
 
 	input  logic        clk_arm,
+	input  logic        pal,		// clk_arm's rate differs by region
+	// The bridge gave up waiting on the port. Only the states that wait on
+	// beats can hang - a command state keeps ddr_req high and is retried by the
+	// bridge on its own - so those re-issue rather than wait forever. Beads
+	// Atari7800_MiSTer-4ux.
+	input  logic        ddr_timeout,
 	input  logic        reset_arm,
 	input  logic        mapper_reset,
 	output logic        shadow_ready,
@@ -39,6 +45,9 @@ module arm_mapper_memory
 	output logic        sample_done,
 	output logic  [7:0] sample_data,
 
+	// The console's run enable. Holds a completed answer for a requester that
+	// is not clocking, and stops the peripheral timer with it: both would
+	// otherwise move under a frozen 6507.
 	input  logic        mem_ce,
 	input  logic        mem_req,
 	input  logic [31:0] mem_addr,
@@ -360,6 +369,11 @@ module arm_mapper_memory
 	logic end_sync1;
 	logic end_sync2;
 	logic end_seen;
+	// The largest ROM shadow the address decode supports. The biggest real
+	// cartridge is CDFJ at 512 KiB, so 1 MiB is twice the headroom anything
+	// needs, and ROM_CMP_BITS is wide enough to hold it.
+	localparam logic [31:0] ROM_MAX_BYTES = 32'h0010_0000;
+	localparam int          ROM_CMP_BITS  = 21;
 	logic [31:0] rom_size;
 
 	typedef enum logic [2:0] {
@@ -460,14 +474,19 @@ module arm_mapper_memory
 	logic [31:0] mamcr;
 	logic [31:0] timer_control;
 	logic [31:0] timer_count;
-	// The Harmony/Melody's LPC2103 counts its timer at 70 MHz; clk_arm is
-	// 71.590909 MHz (5 x clk_sys), so 44 of every 45 clk_arm ticks is 70 MHz
-	// exactly. Titles that budget a frame against this timer - Draconian reads
-	// T1TC and compares it with 1,171,987 - see a 2.3% overrun without it.
-	localparam int TIMER_PERIOD = 45;
-	localparam int TIMER_SKIP   = 45 - 44;
-	logic  [5:0] timer_phase;
-	wire         timer_tick = timer_phase >= TIMER_SKIP[5:0];
+	// The Harmony/Melody's LPC2103 counts its timer at 70 MHz. clk_arm is five
+	// times clk_sys, so what must be divided out depends on the region's clock
+	// (decision 0088):
+	//   NTSC  clk_arm 71.590909 MHz, 44 of every 45 ticks is 70.000000 exactly
+	//   PAL   clk_arm 70.937900 MHz, 75 of every 76 is 70.004500, 0.006% high
+	// Titles that budget a frame against this timer - Draconian reads T1TC and
+	// compares it with 1,171,987 - see a 2.3% overrun with no division at all,
+	// against 0.3% of margin, so the PAL approximation sits about fifty times
+	// inside what the title tolerates. Decision 0068 wrote 45 as a constant and
+	// named this as what would turn it into a wrong number.
+	wire   [6:0] timer_period = pal ? 7'd76 : 7'd45;
+	logic  [6:0] timer_phase;
+	wire         timer_tick = timer_phase >= 7'd1;   // one skipped tick per period
 
 	typedef enum logic [1:0] {
 		DMA_IDLE,
@@ -538,7 +557,14 @@ module arm_mapper_memory
 	wire req_phase = mem_req && bus_state == BUS_IDLE && !mapper_reset;
 	wire dec_sentinel = mem_fetch && mem_addr == 32'hF0000000;
 	wire dec_bad = !shadow_ready || mem_size == 2'b11;
-	wire dec_rom = mem_addr < rom_size;
+	// A full 32-bit magnitude compare against rom_size is four stages of carry
+	// at the head of every decode. The shadow is capped at ROM_MAX_BYTES, so
+	// only the low ROM_CMP_BITS can decide the answer and everything above them
+	// is a flat OR: an address at or past 2 MiB is out of range by inspection,
+	// and below that the two forms compare the same bits. rom_size is clamped
+	// where it is captured, so the cap and the decode cannot disagree.
+	wire dec_rom = !(|mem_addr[31:ROM_CMP_BITS]) &&
+		(mem_addr[ROM_CMP_BITS-1:0] < rom_size[ROM_CMP_BITS-1:0]);
 	wire dec_ram = mem_addr >= 32'h40000000 &&
 		mem_addr < 32'h40000000 + {16'b0, mapper_ram_size};
 	// The whole APB peripheral window. Beside the two timer registers modelled
@@ -599,12 +625,11 @@ module arm_mapper_memory
 		cache_hit_now || fill_hit_now || ram_wr_now || ram_rd_now;
 	assign mem_abort = hit_bad || hit_rom_wr || hit_none;
 	assign mem_rdata =
-		line_select  ? line_word(fetch_line_data, mem_addr[4:2]) :
-		hit_mmio     ? mmio_rdata :
-		hit_sentinel ? 32'b0 :
-		cache_hit_now ? line_word(selected_cache_data, req_addr[4:2]) :
-		fill_hit_now ? line_word(fill_done_data, fill_word_index) :
-		ram_rd_now   ? ram_rdata : 32'b0;
+		({32{line_select}}   & line_word(fetch_line_data, mem_addr[4:2])) |
+		({32{hit_mmio}}      & mmio_rdata) |
+		({32{cache_hit_now}} & line_word(selected_cache_data, req_addr[4:2])) |
+		({32{fill_hit_now}}  & line_word(fill_done_data, fill_word_index)) |
+		({32{ram_rd_now}}    & ram_rdata);
 	assign return_fetch = hit_sentinel;
 
 	// A RAM access drives the port in the cycle it is decoded; the state
@@ -701,10 +726,15 @@ module arm_mapper_memory
 			sample_sync2 <= sample_sync1;
 			fill_done <= 1'b0;
 
-			timer_phase <= (timer_phase == TIMER_PERIOD[5:0] - 6'd1) ?
-				6'd0 : timer_phase + 6'd1;
-			if (timer_control[0] && timer_tick)
-				timer_count <= timer_count + 32'd1;
+			// Draconian budgets a frame against T1TC, so a timer that ran on
+			// through a pause would come back a whole pause ahead of the
+			// 6507 that reads it.
+			if (mem_ce) begin
+				timer_phase <= (timer_phase == timer_period - 7'd1) ?
+					7'd0 : timer_phase + 7'd1;
+				if (timer_control[0] && timer_tick)
+					timer_count <= timer_count + 32'd1;
+			end
 
 			if (epoch_sync2 != epoch_seen) begin
 				epoch_seen <= epoch_sync2;
@@ -739,7 +769,11 @@ module arm_mapper_memory
 						ddr_state <= DDR_LOAD_WRITE;
 					end else if (end_sync2 != end_seen) begin
 					end_seen <= end_sync2;
-					rom_size <= end_size_payload;
+					// Clamped, not trusted: a larger image would decode as
+					// though it stopped at the cap, so make the stored size
+					// say the same thing.
+					rom_size <= (end_size_payload > ROM_MAX_BYTES) ?
+						ROM_MAX_BYTES : end_size_payload;
 					shadow_ready <= 1'b1;
 					end else if (dma_state == DMA_COPY_COMMAND) begin
 						dma_ddr_addr <= SHADOW_BASE_WORD +
@@ -770,7 +804,9 @@ module arm_mapper_memory
 				end
 
 				DDR_ROM_FILL: begin
-					if (ddr_rvalid) begin
+					if (ddr_timeout) begin
+						ddr_state <= DDR_ROM_COMMAND;
+					end else if (ddr_rvalid) begin
 						next_fill_line = put_beat(fill_line, fill_beat, ddr_dout);
 						fill_line <= next_fill_line;
 						if (fill_beat == 2'd3) begin
@@ -789,7 +825,9 @@ module arm_mapper_memory
 				end
 
 				DDR_DMA_READ: begin
-					if (ddr_rvalid) begin
+					if (ddr_timeout) begin
+						ddr_state <= DDR_DMA_COMMAND;
+					end else if (ddr_rvalid) begin
 						dma_read_data <= ddr_dout;
 						ddr_state <= DDR_IDLE;
 						dma_state <= DMA_RAM_WRITE;
@@ -802,7 +840,9 @@ module arm_mapper_memory
 				end
 
 				default: begin // DDR_SAMPLE_READ
-					if (ddr_rvalid) begin
+					if (ddr_timeout) begin
+						ddr_state <= DDR_SAMPLE_COMMAND;
+					end else if (ddr_rvalid) begin
 						sample_cache_data <= ddr_dout;
 						sample_cache_tag <= sample_active_addr[24:3];
 						sample_cache_valid <= 1'b1;

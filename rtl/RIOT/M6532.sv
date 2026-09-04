@@ -41,7 +41,7 @@ module M6532
 	output [7:0] PA_out,    // NOTE that port output must be fed back to input
 	input  [7:0] PB_in,     // if not altered by a peripheral, in order for
 	output [7:0] PB_out,    // the chip to read properly!
-	output       oe,        // Output enabled (always 8 bits)
+	output [7:0] oe,        // Which of D7:D0 the chip is actually driving
 	output       PA_read    // A selected read of ORA is happening now
 );
 
@@ -119,15 +119,25 @@ wire p64 = ~|prescaler[5:0] && incr == 2'd2;
 wire p1024 = ~|prescaler[9:0] && incr == 2'd3;
 wire tick_inc = p1 || p8 || p64 || p1024;
 
+// Both flags are set by the same edge the CPU latches the bus on, so an IFR
+// read landing on that cycle has to carry them - the same reason the counter
+// is read out one ahead below. Named here so the read and the flag itself
+// cannot drift apart.
+wire timer_wrap = tick_inc && timer == 0;
+wire pa7_edge = (edge_detect && ~old_pa7 && pa7) || (~edge_detect && old_pa7 && ~pa7);
+
 // RES turns the data bus off, and the part drives it only through phase 2 of a
 // selected read. Phase 2 here is the one clk_sys cycle ce marks, which is the
-// cycle the CPU samples in.
-assign oe = res_n && (CS1 & ~CS2_n) && RW_n && ce;
+// cycle the CPU samples in. All eight lines drive together: even the interrupt
+// flag read, which carries flags on D7 and D6 only, pulls D5:D0 to 0 rather
+// than leaving them floating (R6532 sheet, Interrupt Flag Register).
+wire drive = res_n && (CS1 & ~CS2_n) && RW_n && ce;
+assign oe = {8{drive}};
 
 // A peripheral that a read consumes - a trackball step, a paddle dump -
 // needs to know when ORA is on the bus. ORA is RS=1, A2=0, A1:A0=00, with
 // A4:A3 don't care, so $0280, $0288, $0290 and $0298 are all the same read.
-assign PA_read = oe && RS_n && ~addr[2] && ~|addr[1:0];
+assign PA_read = drive && RS_n && ~addr[2] && ~|addr[1:0];
 
 assign d_out = ram_read_r ? ram_q : d_out_reg;
 
@@ -156,7 +166,7 @@ always_ff @(posedge clk) begin
 			if (~addr[0])
 				d_out_reg <= tick_inc ? timer - 8'd1 : timer;
 			else
-				d_out_reg <= {interrupt[7:6], 6'd0};
+				d_out_reg <= {interrupt[7] | timer_wrap, interrupt[6] | pa7_edge, 6'd0};
 		end
 	end
 	if (~res_n) begin
@@ -230,14 +240,14 @@ always_ff @(posedge clk) begin
 			end
 		end
 
-		if (tick_inc && timer == 0) begin
+		if (timer_wrap) begin
 			interrupt[7] <= 1;
 			rollover <= 1;
 		end
 
 		// Edge detection
 		old_pa7 <= pa7;
-		if ((edge_detect && ~old_pa7 && pa7) || (~edge_detect && old_pa7 && ~pa7))
+		if (pa7_edge)
 			interrupt[6] <= 1;
 	end
 end

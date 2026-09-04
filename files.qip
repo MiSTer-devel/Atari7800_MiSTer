@@ -1,6 +1,7 @@
 set_global_assignment -name QIP_FILE rtl/6502/mos6502.qip
 set_global_assignment -name QIP_FILE rtl/Pokey/Pokey.qip
 set_global_assignment -name QIP_FILE rtl/Minnie/Minnie.qip
+set_global_assignment -name QIP_FILE rtl/SN76489/SN76489.qip
 set_global_assignment -name QIP_FILE rtl/Maria/maria.qip
 set_global_assignment -name QIP_FILE rtl/jt51/jt51.qip
 set_global_assignment -name VHDL_FILE rtl/dpram.vhd
@@ -34,7 +35,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/banks2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mux.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mixer_plus.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/cofi.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lightgun.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/paddles.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mouse_st.sv
@@ -51,3 +51,4 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/RIOT/M6532.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/top.sv
 set_global_assignment -name SYSTEMVERILOG_FILE Atari7800.sv
 set_global_assignment -name SDC_FILE Atari7800.sdc
+set_global_assignment -name QIP_FILE sys/pll_cfg.qip

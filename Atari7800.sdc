@@ -10,10 +10,10 @@
 #
 # One PLL (emu|pll) makes all four core clocks from a 572.65625 MHz VCO:
 #
-#   outclk_0  general[0]  VCO/40  14.31641 MHz  69.847 ns  clk_sys
-#   outclk_1  general[1]  VCO/10  57.26563 MHz  17.462 ns  clk_vid
-#   outclk_2  general[2]  VCO/80   7.15820 MHz             clk_tia   (unused)
-#   outclk_3  general[3]  VCO/8   71.58203 MHz  13.969 ns  clk_arm
+#   outclk_0  counter[0]  VCO/40  14.31641 MHz  69.847 ns  clk_sys
+#   outclk_1  counter[1]  VCO/10  57.26563 MHz  17.462 ns  clk_vid
+#   outclk_2  counter[2]  VCO/80   7.15820 MHz             clk_tia   (unused)
+#   outclk_3  counter[3]  VCO/8   71.58203 MHz  13.969 ns  clk_arm
 #
 # clk_tia is wired in Atari7800.sv but nothing is clocked by it; it carries no
 # timed path. clk_vid is exactly 4 x clk_sys and clk_arm exactly 5 x clk_sys,
@@ -70,10 +70,33 @@
 # timed everywhere else it goes. -hold 1 puts the hold check back where the
 # default had it; without it, -setup 2 would move the hold check a period late.
 
-if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]] > 0} {
+# Finding emu|pll's outputs. altera_pll names its generated clocks after the
+# IP variant it was built as, so the name changes when the IP is retyped:
+#
+#   pll_type "General"    ...|altera_pll_i|general[N].gpll~PLL_OUTPUT_COUNTER|divclk
+#   pll_type "Cyclone V"  ...|altera_pll_i|cyclonev_pll|counter[N].output_counter|divclk
+#
+# The region retune made emu|pll "Cyclone V"/"Reconfigurable", which renamed
+# every output. Both spellings are matched here, and a miss is reported: the
+# previous single-pattern guard wrapped the whole file, so the rename turned
+# every exception below into a no-op and nothing said a word.
+proc a78_pll_divclk {n} {
+	foreach pat [list \
+		"*|pll|pll_inst|altera_pll_i|cyclonev_pll|counter\[$n\].output_counter|divclk" \
+		"*|pll|pll_inst|altera_pll_i|general\[$n\].*|divclk"] {
+		set c [get_clocks -nowarn $pat]
+		if {[get_collection_size $c] > 0} { return $c }
+	}
+	return {}
+}
 
-	set core_clk_sys [get_clocks {*|pll|pll_inst|altera_pll_i|general[0].*|divclk}]
-	set core_sdram   [get_registers -nowarn {*|sdram:sdram|*}]
+set core_clk_sys [a78_pll_divclk 0]
+
+if {[get_collection_size $core_clk_sys] == 0} {
+	post_message -type critical_warning \
+		"Atari7800.sdc: emu|pll clk_sys not found; the SDRAM read result is unrelaxed"
+} else {
+	set core_sdram [get_registers -nowarn {*|sdram:sdram|*}]
 
 	if {[get_collection_size $core_sdram] > 0} {
 		set_multicycle_path -setup 2 -from $core_sdram -to $core_clk_sys
@@ -83,8 +106,9 @@ if {[get_collection_size [get_clocks -nowarn {*|pll|pll_inst|altera_pll_i|genera
 			"Atari7800.sdc: sdram registers not found; the read result is unrelaxed"
 	}
 
-	unset core_clk_sys core_sdram
+	unset core_sdram
 }
+unset core_clk_sys
 
 
 # THE SDRAM PINS ARE DELIBERATELY UNCONSTRAINED
