@@ -239,10 +239,12 @@ module mapper_3F
 	logic [7:0] bank;
 	wire [7:0] current_bank = ~a_in[11] ? bank : 8'hFF;
 
-	// Any write below $0040 sets the bank. That overlaps the TIA, so these
-	// carts use the TIA mirror at $40-$7F for everything else.
+	// The bank register is address $3F, and only that address. The cartridge
+	// edge carries no R/W, so a wider window would also latch on reads: the
+	// dummy read of $0000 inside STA $00,X would switch banks mid-instruction,
+	// which is exactly what Miner 2049er's zero page clear does.
 	always @(posedge clk) begin
-		if (~|a_in[12:6])
+		if (a_in == 13'h3F)
 			bank <= d_in;
 
 		if (reset)
