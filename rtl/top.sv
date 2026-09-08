@@ -1020,7 +1020,9 @@ module Atari7800 #(
 		.ddr_timeout    (arm_ddr_timeout),
 		.d_out          (cart_2600_DB_out),
 		.d_in           (cart_din),
-		.a_in           (AB[12:0]),
+		// The slot's A12 is gated by INPTCTRL's cart-enable bit, so the BIOS
+		// RAM test at $1800-$1FFF is never seen as $1xxx by a 2600 cart.
+		.a_in           ({AB[12] & bios_en_b, AB[11:0]}),
 		.rw             (RW),
 		.reset          (effective_reset),
 		.clk            (clk_sys),
@@ -1028,6 +1030,7 @@ module Atari7800 #(
 		.phi1           (pclk1),
 		// Held with the CPU: the stalled cycle is one held read, seen once.
 		.phi2           (mapper_phi2),
+		.arm_driver_run (lock_ctrl && tia_en),
 		.sc             (sc),
 		.mapper         (|mapper ? mapper : force_bs),
 		.mapper_revision(mapper_revision),

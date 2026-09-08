@@ -15,6 +15,7 @@ module cart2600
 	input           ce,         // Original system clock enable (~3.579mhz) used to divide into crystals
 	input           phi1,       // CPU Phase 1 Signal (used for FE to catch data at the right moment)
 	input           phi2,
+	input           arm_driver_run, // Harmony/Melody driver past its power-up stub
 	output logic [7:0] oe,      // Which of d_out's lines the cartridge drives
 
 	// Autodetect info
@@ -220,6 +221,12 @@ module cart2600
 	// in an atypical way causing this to trigger incorrectly for some games, however this
 	// design does not reproduce that issue.
 	wire address_change = old_ain != a_in;
+
+	// A Harmony/Melody powers up in a boot stub that serves ROM and ignores
+	// hotspots and registers until the 6507 is running cartridge code. On a
+	// 7800 that is after the BIOS has probed the cart and locked 2600 mode,
+	// so the probe's read of $FFF8 never reaches the driver's bank logic.
+	wire arm_access = phi2 && arm_driver_run;
 
 	// High from the clock edge that took this access until the next 6507 cycle
 	// starts, which is what closes the cartridge RAM write strobe above. phi1
@@ -710,7 +717,7 @@ module cart2600
 	mapper_dpcplus dpcplus (
 		.clk,
 		.reset                  (reset || mapper != BANKDPCP),
-		.access                 (phi2),
+		.access                 (arm_access),
 		.rw,
 		.a_in,
 		.d_in,
@@ -748,7 +755,7 @@ module cart2600
 	mapper_cdf cdf (
 		.clk,
 		.reset                   (reset || mapper != BANKCDF),
-		.access                 (phi2),
+		.access                 (arm_access),
 		.rw,
 		.a_in,
 		.d_in,
@@ -807,7 +814,7 @@ module cart2600
 	mapper_bus bus (
 		.clk,
 		.reset                   (reset || mapper != BANKBUS),
-		.access                 (phi2),
+		.access                 (arm_access),
 		.rw,
 		.a_in,
 		.d_in,
