@@ -117,6 +117,7 @@ parameter CONF_STR = {
 	"P1O[74],Composite Filter,Off,On;",
 	"H4P1O[65:64],Composite Smear,1,2,3;",
 	"H4P1O[77],Composite AGC,On,Off;",
+	"H4P1O[78],Composite Comb,Off,On;",
 	"P1OUV,Temperature Colors,Warm,Cool,Hot,Custom;",
 	"H3P1FC3,PAL,Load Palette;",
 	"P2,Peripherals;",
@@ -1364,6 +1365,7 @@ video_mixer_plus #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1), .COMP_SPC(4)) v
 	.comp_luma_gain  (16'd2857),
 	// AGC defaults on (the menu lists On first, so a zeroed status selects it).
 	.comp_agc        (~status[77]),
+	.comp_comb       (status[78]),
 
 	.VGA_DE(vga_de),
 	.hq2x(scale==1),

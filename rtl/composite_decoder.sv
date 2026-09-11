@@ -72,6 +72,10 @@ module composite_decoder #(
 	// burst to measure.
 	input                agc_en,
 
+	// Average each line with the one above it before separating anything, for
+	// the vertical blend a comb set gives. See the comb section.
+	input                comb_en,
+
 	output logic         ce_out,
 	output logic         hs_out,
 	output logic         vs_out,
@@ -166,21 +170,75 @@ always_ff @(posedge clk) if (ce) begin
 	else                          c16 <=  c_shf[15:0];
 end
 
+// ------------------------------------------------------------ line delay comb
+//
+// A line back, averaged with the current one, before anything else looks at it.
+//
+// What a comb set does to a picture is lose vertical detail. On a broadcast
+// source - 227.5 subcarrier cycles a line, so chroma arrives inverted - that
+// loss is the price of the separation: luma is the two-line average, and
+// anything that alternates line to line averages away with it. An Apple II's
+// single-line blue and orange come out of a comb set as grey.
+//
+// These chips are not broadcast sources. 228 colour clocks on a 2600, 227 on a
+// 7800, both whole numbers of cycles, so their chroma repeats in phase and the
+// line difference separates nothing:
+//
+//   cur  = Y(n)   + C
+//   prev = Y(n-1) + C
+//
+//   cur + prev  =  Y(n) + Y(n-1) + 2C   the notch still splits it
+//   cur - prev  =  Y(n) - Y(n-1)        carries no chroma to recover
+//
+// So the difference is dropped and only the average goes on to the notch. That
+// is the whole of it: the same vertical blend a comb set imposes, arrived at
+// the only way this signal allows. A line-alternating dither blends to its mean
+// and stops decoding as artifact colour, and a colour that changes between
+// lines bleeds half a line into the one above.
+//
+// Adding the difference back would reconstruct Y(n) exactly and undo the blend,
+// which is the point of the option, and it would carry the chroma step at every
+// vertical colour edge into luma as hanging dots. It is not an oversight that
+// it is missing.
+//
+// The delay is a RAM addressed by hcnt, so it is exactly one line whatever the
+// source's line length is. c16 trails comp by a sample, so the write address
+// trails hcnt by one as well; the registered read then lands on the same
+// position in the line as the current c16 and the comb costs no pipeline stage.
+//
+// The RAM is inferred here rather than taken from a wrapper so the module stays
+// self-contained; the attribute is what keeps 1024 words out of the fabric.
+
+logic [15:0] linebuf [0:1023] /* synthesis ramstyle = "M10K" */;
+logic  [9:0] hcnt_d;
+logic signed [15:0] prev;
+
+always_ff @(posedge clk) if (ce) begin
+	hcnt_d          <= hcnt;
+	linebuf[hcnt_d] <= $unsigned(c16);
+	prev            <= $signed(linebuf[hcnt]);
+end
+
+/* verilator lint_off UNUSEDSIGNAL */
+wire signed [16:0] v_sum = c16 + prev;
+/* verilator lint_on UNUSEDSIGNAL */
+wire signed [15:0] cs = comb_en ? v_sum[16:1] : c16;
+
 // --------------------------------------------------------- notch: luma/chroma
 //
 // SPC/2 samples back is half a subcarrier cycle, so the subcarrier arrives
-// inverted: the sum cancels it and the difference keeps only it. Exact, and no
-// coefficients. It is also the only separation that works on sources whose line
-// is a whole number of subcarrier cycles, where a comb would cancel the wrong
-// one of the two.
+// inverted: the sum cancels it and the difference keeps only it. Exact, no
+// coefficients, and it does not care what the line length is - which is why it
+// stays in the path and carries the comb's vertical average rather than being
+// replaced by it.
 
 logic [HALFC-1:0][15:0] nd;
 logic signed [15:0] yc, cc, yc_d, y_lp;
 
 wire signed [15:0] c_del = $signed(nd[HALFC-1]);
 /* verilator lint_off UNUSEDSIGNAL */
-wire signed [16:0] n_sum = c16 + c_del;
-wire signed [16:0] n_dif = c16 - c_del;
+wire signed [16:0] n_sum = cs + c_del;
+wire signed [16:0] n_dif = cs - c_del;
 /* verilator lint_on UNUSEDSIGNAL */
 
 // The notch takes the subcarrier out of luma but leaves what the pixel grid
@@ -193,7 +251,7 @@ wire signed [16:0] y_sum = yc + yc_d;
 /* verilator lint_on UNUSEDSIGNAL */
 
 always_ff @(posedge clk) if (ce) begin
-	nd   <= {nd[HALFC-2:0], c16};
+	nd   <= {nd[HALFC-2:0], cs};
 	yc   <= n_sum[16:1];
 	cc   <= n_dif[16:1];
 	yc_d <= yc;

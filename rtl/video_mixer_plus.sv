@@ -63,6 +63,8 @@ module video_mixer_plus
 	                                    // NTSC-J and consoles, 439 for NTSC-M
 	input     [15:0] comp_luma_gain,    // volts to white, Q16
 	input            comp_agc,          // track level off the burst
+	input            comp_comb,         // blend each line with the one above,
+	                                    // the way a comb set does
 
 	inout     [21:0] gamma_bus,
 
@@ -223,6 +225,7 @@ composite_decoder #(.SPC(COMP_SPC)) comp_dec
 	.setup($signed(comp_setup)),
 	.luma_gain(comp_luma_gain),
 	.agc_en(comp_agc),
+	.comb_en(comp_comb),
 
 	.ce_out(ce_comp_out),
 	.hs_out(hs_comp),
