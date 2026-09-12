@@ -52,14 +52,11 @@ logic [23:0] out_color, nwarm_color, ncool_color, nhot_color,
 // Chroma will end up blending more smoothly
 
 wire pix_ce_normal = is_maria ? maria_pix_ce : tia_pix_ce;
-logic [1:0] pix_ce_paused_tia;
-logic pix_ce_paused_maria;
+logic [1:0] pix_ce_paused;
 always @(posedge clk_sys) begin
-	pix_ce_paused_maria <= ~pix_ce_paused_maria;
-	pix_ce_paused_tia <= pix_ce_paused_tia + 2'd1;
+	pix_ce_paused <= pix_ce_paused + 2'd1;
 end
-wire pix_ce_paused = is_maria ? pix_ce_paused_maria : pix_ce_paused_tia[1];
-wire pix_ce_immediate = pause ? pix_ce_paused : pix_ce_normal;
+wire pix_ce_immediate = pause ? pix_ce_paused[is_maria ? 0 : 1] : pix_ce_normal;
 logic pix_ce_delayed;
 logic [7:0] yuv_index;
 logic [7:0][1:0] last_color;

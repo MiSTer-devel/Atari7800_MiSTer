@@ -36,6 +36,7 @@ c5_pin_model_dump.txt
 *~
 *.xml
 *.cdf
+.DS_Store
 
 # Beads / Dolt files (added by bd init)
 .dolt/
