@@ -132,6 +132,14 @@ module maria(
 	logic             pclk = 1'b0;
 	logic             tia_clk_en;
 	logic [3:0]       tia_enable_count = 4'd2;
+	logic             mclk0_pending, mclk1_pending;
+	logic             pclk0_pending, pclk1_pending;
+
+	// Preserve pending clock steps while paused.
+	assign mclk0 = ce && mclk0_pending;
+	assign mclk1 = ce && mclk1_pending;
+	assign pclk0 = ce && pclk0_pending;
+	assign pclk1 = ce && pclk1_pending;
 
 	// Apply color kill if needed
 	assign YC = UV_out & (ctrl[7] ? 8'h0F : 8'hFF);
@@ -154,16 +162,16 @@ module maria(
 	assign tia_clk_x2 = tia_clk_en && mclk0;
 
 	always @(posedge clk_sys) begin
-		mclk1 <= 1'b0;
-		mclk0 <= 1'b0;
-		pclk0 <= 1'b0;
-		pclk1 <= 1'b0;
-
 		if (reset) begin
 			ready_int <= 1'b1;
 		end
 
 		if (ce) begin
+			mclk1_pending <= 1'b0;
+			mclk0_pending <= 1'b0;
+			pclk0_pending <= 1'b0;
+			pclk1_pending <= 1'b0;
+
 			old_men <= maria_en;
 
 			// If maria enabled rises, the CPU clock is held in a state
@@ -194,8 +202,8 @@ module maria(
 
 			// Uniform in both regions: PAL's master clock is simply slower,
 			// out of the PLL (decision 0088). MARIA halves clk_sys either way.
-			mclk0 <= clk_toggle;
-			mclk1 <= ~clk_toggle;
+			mclk0_pending <= clk_toggle;
+			mclk1_pending <= ~clk_toggle;
 			clk_toggle <= ~clk_toggle;
 
 			if (!reset) begin
@@ -215,8 +223,8 @@ module maria(
 					clock_div <= clock_div - 1'd1;
 				else begin
 					pclk_toggle <= ~pclk_toggle;
-					pclk1 <= pclk_toggle;
-					pclk0 <= ~pclk_toggle;
+					pclk1_pending <= pclk_toggle;
+					pclk0_pending <= ~pclk_toggle;
 					clock_div <= (~pclk_toggle ? sel_slow_clock : slow_clk_latch) ? 3'd2 : 3'd1;
 				end
 			end
