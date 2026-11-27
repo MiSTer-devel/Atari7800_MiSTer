@@ -114,10 +114,9 @@ parameter CONF_STR = {
 	"P1O9B,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P1OT,Show Overscan,No,Yes;",
 	"P1OE,Show Border,Yes,No;",
-	"P1O[74],Composite Filter,Off,On;",
-	"H4P1O[65:64],Composite Smear,1,2,3;",
-	"H4P1O[77],Composite AGC,On,Off;",
-	"H4P1O[78],Composite Comb,Off,On;",
+	"P1O[65:64],Composite Filter,Off,Budget TV,Premium TV;",
+	"H4P1O[78:77],Comp. Sharpness,Off,Low,Medium,High;",
+	"H4P1O[80:79],Comp. Colour,Normal,Reference,High,Higher;",
 	"P1OUV,Temperature Colors,Warm,Cool,Hot,Custom;",
 	"H3P1FC3,PAL,Load Palette;",
 	"P2,Peripherals;",
@@ -250,7 +249,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.status             (status),
 	.status_set         (status_set),
 	.status_in          (status_in),
-	.status_menumask    ({~status[74],status[31:30] != 3,~tia_en,(is_snac0 | is_snac1),en216p}),
+	.status_menumask    ({~use_composite,status[31:30] != 3,~tia_en,(is_snac0 | is_snac1),en216p}),
 
 	.ioctl_addr         (ioctl_addr),
 	.ioctl_dout         (ioctl_dout),
@@ -427,8 +426,7 @@ logic [3:0] iout;
 logic tia_hsync;
 logic tia_pal, tia_f1;
 logic signed [23:0] comp;
-logic comp_tog, comp_hs, comp_vs, comp_hb, comp_vb;
-logic [9:0] comp_burst_start, comp_burst_len;
+logic comp_tog, comp_maria;
 logic [7:0] rval;
 
 always @(posedge clk_sys) begin
@@ -540,12 +538,7 @@ Atari7800 main
 	.ce_pix       (ce_pix_raw),
 	.comp         (comp),
 	.comp_tog     (comp_tog),
-	.comp_hs      (comp_hs),
-	.comp_vs      (comp_vs),
-	.comp_hb      (comp_hb),
-	.comp_vb      (comp_vb),
-	.comp_burst_start(comp_burst_start),
-	.comp_burst_len  (comp_burst_len),
+	.comp_maria   (comp_maria),
 	.show_border  (~status[14]),
 	.show_overscan(status[29]),
 	.PAL          (region_select),
@@ -1336,47 +1329,83 @@ always @(posedge CLK_VIDEO) begin
 end
 wire ce_comp = comp_tog_d ^ comp_tog_d2;
 
-wire use_composite = status[74];
+reg [1:0] comp_reset_s;
+always @(posedge CLK_VIDEO) comp_reset_s <= {comp_reset_s[0], reset};
 
-// Menu lists "1,2,3" (0 does nothing), so smear is the list index plus one
-// and a zeroed status lands on the default of 1.
-wire [3:0] comp_smear_lvl = {2'd0, status[65:64]} + 4'd1;
+// Composite receiver: sync, blanking and pixels all come from the waveform.
+// Budget is a notch set with a short chroma tail; Premium adds the adaptive
+// line comb and a longer tail. The tails are shorter than a set for the NES
+// wants: 320-mode text lives on one-pixel strokes, and a long tail averages
+// their fringes away. The decoded stream is one pixel per 4*fsc sample on
+// CLK_VIDEO, so the scandoubler and HQ2x stay off while it is selected.
+wire [1:0] composite_set = status[65:64];
+wire use_composite = |composite_set;
+wire composite_premium = composite_set[1];
 
-video_mixer_plus #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1), .COMP_SPC(4)) video_mixer
+wire comp_pix, comp_hs, comp_vs, comp_hb, comp_vb;
+wire [7:0] comp_r, comp_g, comp_b;
+
+// The set's colour control. Burst-normalised decoding is the reference
+// level; consoles captured on real displays run about 1.2 times that, which
+// is what the palettes measure, so that is Normal.
+wire [7:0] comp_sat = status[80:79] == 2'd1 ? 8'd128 : status[80:79] == 2'd2 ? 8'd179 :
+                      status[80:79] == 2'd3 ? 8'd205 : 8'd154;
+
+composite_decoder #(.SPC(4), .LUMA_LP(2), .LINE_INVERT(0)) composite_decoder
+(
+	.clk(CLK_VIDEO),
+	.reset(comp_reset_s[1]),
+	.ce(ce_comp),
+	.comp(comp),
+	.sat(comp_sat),
+	.hue(8'd0),
+	.chroma_trail(composite_premium ? 4'd2 : 4'd1),   // 4 or 2 sample time constant
+	.sharpness({status[78:77], 2'b00}),
+	.black_stretch(2'd0),
+	.brightness(16'sd0),   // no setup, like NTSC-J
+	.contrast(16'd2857),   // 0.714 V to white
+	.comb_mode(composite_premium ? 2'd2 : 2'd0),
+	.ce_out(),
+	.pix_out(comp_pix),
+	.hs_out(comp_hs),
+	.vs_out(comp_vs),
+	.hb_out(comp_hb),
+	.vb_out(comp_vb),
+	.r_out(comp_r),
+	.g_out(comp_g),
+	.b_out(comp_b)
+);
+
+wire comp_hb_c, comp_vb_c;
+composite_crop composite_crop
+(
+	.clk(CLK_VIDEO),
+	.pix(comp_pix),
+	.hb_in(comp_hb),
+	.vb_in(comp_vb),
+	.is_maria(comp_maria),
+	.is_pal(region_select),
+	.show_border(~status[14]),
+	.show_overscan(status[29]),
+	.hb_out(comp_hb_c),
+	.vb_out(comp_vb_c)
+);
+
+video_mixer #(.LINE_LENGTH(372), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 (
 	.*,
-	.use_composite(use_composite),
-	.ce_comp      (ce_comp),
-	.composite    (comp),
-	.comp_hs      (comp_hs),
-	.comp_vs      (comp_vs),
-	.comp_hb      (comp_hb),
-	.comp_vb      (comp_vb),
-	// The two chips put their burst in different places, so the window comes
-	// muxed out of the core alongside the signal.
-	.comp_burst_start(comp_burst_start),
-	.comp_burst_len  (comp_burst_len),
-	.comp_sat        (8'd128),
-	.comp_hue        (8'd0),
-	.comp_smear      (comp_smear_lvl),
-	.comp_luma_delay (4'd2),
-	// The 7800 has no setup, like NTSC-J; NTSC-M would be 439.
-	.comp_setup      (16'd0),
-	.comp_luma_gain  (16'd2857),
-	// AGC defaults on (the menu lists On first, so a zeroed status selects it).
-	.comp_agc        (~status[77]),
-	.comp_comb       (status[78]),
-
+	.ce_pix(use_composite ? comp_pix : ce_pix),
 	.VGA_DE(vga_de),
-	.hq2x(scale==1),
-	.HSync(HSync),
-	.HBlank(HBlank),
-	.VSync(VSync),
-	.VBlank(VBlank),
+	.hq2x(scale==1 && !use_composite),
+	.scandoubler(scandoubler && !use_composite),
+	.HSync(use_composite ? comp_hs : HSync),
+	.HBlank(use_composite ? comp_hb_c : HBlank),
+	.VSync(use_composite ? comp_vs : VSync),
+	.VBlank(use_composite ? comp_vb_c : VBlank),
 
-	.R((gun_en & gun_target) ? 8'd255 : R),
-	.G((gun_en & gun_target) ? 8'd0 : G),
-	.B((gun_en & gun_target) ? 8'd0 : B)
+	.R(use_composite ? comp_r : (gun_en & gun_target) ? 8'd255 : R),
+	.G(use_composite ? comp_g : (gun_en & gun_target) ? 8'd0 : G),
+	.B(use_composite ? comp_b : (gun_en & gun_target) ? 8'd0 : B)
 );
 
 /////////////////////////  STATE SAVE/LOAD  /////////////////////////////
@@ -1456,7 +1485,7 @@ EEPROM_24LC0X
 // save transfer below walks sd_lba 0..63 - 64 sectors, 32 KiB. At 14 bits both
 // wrapped, so the SaveKey's upper half aliased onto its lower half and the
 // second half of every save file overwrote the first on load.
-dpram_dc #(.widthad_a(15)) hsc_ram
+dpram #(.widthad_a(15)) hsc_ram
 (
 	.clock_a   (clk_sys),
 	// The HSC shares this port and arrives on the 16-bit system bus; it lives

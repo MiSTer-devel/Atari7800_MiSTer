@@ -9,6 +9,7 @@ set_global_assignment -name VERILOG_FILE rtl/cache_ram.v
 set_global_assignment -name VERILOG_FILE rtl/bram.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/composite_decoder.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/composite_out.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/composite_crop.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart_ram_tdp.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cdf_fastjump_table.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/arm7tdmi/arm7tdmi_pkg.sv
@@ -34,7 +35,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/banks2600.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mux.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/video_mixer_plus.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/lightgun.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/paddles.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mouse_st.sv
