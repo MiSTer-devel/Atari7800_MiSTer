@@ -4,7 +4,7 @@ USE ieee.std_logic_1164.all;
 LIBRARY altera_mf;
 USE altera_mf.all;
 
-ENTITY dpram_dc IS
+ENTITY dpram IS
 	GENERIC
 	(
 		init_file			: string := " ";
@@ -28,10 +28,10 @@ ENTITY dpram_dc IS
 		q_a		: OUT STD_LOGIC_VECTOR (width_a-1 DOWNTO 0);
 		q_b		: OUT STD_LOGIC_VECTOR (width_a-1 DOWNTO 0)
 	);
-END dpram_dc;
+END dpram;
 
 
-ARCHITECTURE SYN OF dpram_dc IS
+ARCHITECTURE SYN OF dpram IS
 
 	SIGNAL sub_wire0	: STD_LOGIC_VECTOR (width_a-1 DOWNTO 0);
 	SIGNAL sub_wire1	: STD_LOGIC_VECTOR (width_a-1 DOWNTO 0);

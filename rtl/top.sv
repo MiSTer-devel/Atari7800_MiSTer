@@ -130,12 +130,7 @@ module Atari7800 #(
 	output logic       tia_hsync,
 	output logic signed [23:0] comp,       // Composite video, selected the same way as the RGB path
 	output logic       comp_tog,           // Toggles per composite sample, for the CDC
-	output logic       comp_hs,
-	output logic       comp_vs,
-	output logic       comp_hb,
-	output logic       comp_vb,
-	output logic [9:0] comp_burst_start,   // Burst window differs between the two chips
-	output logic [9:0] comp_burst_len,
+	output logic       comp_maria,         // Which chip's codes are in it
 
 	input  logic       use_stereo,
 	input [10:0]       ps2_key,
@@ -209,6 +204,8 @@ module Atari7800 #(
 	logic           phase_valid;
 	logic           reset_hold = 1'b1;
 	logic [1:0]     reset_phase_wait = 2'd0;
+	localparam [18:0] RESET_MIN_CYCLES = 19'd286364;
+	logic [18:0]    reset_count = RESET_MIN_CYCLES;
 	logic           tia_clk_x2;
 	logic           read_2600;
 	logic [1:0]     pause_clock;
@@ -229,12 +226,18 @@ module Atari7800 #(
 	wire first_phase_is_phi1 = bypass_bios && tia_mode &&
 		!tia_clock_after_reset;
 
-	// Reset assertion is immediate. Release lands on the phase before the first
-	// one the CPU acts on, so that first visible edge is still source-caused.
+	// Allow at least 20 ms of unpaused clocks for memory clears, then release
+	// on the phase before the first one the CPU acts on. A reset taken while
+	// the OSD has the core paused therefore stays held until the pause ends.
 	always_ff @(posedge clk_sys) begin
 		if (reset) begin
 			reset_hold <= 1'b1;
 			reset_phase_wait <= 2'd0;
+			reset_count <= RESET_MIN_CYCLES;
+		end
+		else if (|reset_count) begin
+			if (!pause)
+				reset_count <= reset_count - 19'd1;
 		end
 		else if (reset_hold && phase_source_stable && phase_valid &&
 			!phase_source_tia) begin
@@ -496,16 +499,18 @@ module Atari7800 #(
 		.paddle_read    (i_read)
 	);
 
-	// One output stage for both chips, which is what the board has. MARIA owns it:
-	// tia-maria.pdf page 47 shows its COLOR DELAY LINE & LUM sheet taking TC0-3 and
-	// TL0-3F beside its own MC0-3 / ML0-3F, gated by MENBLF, driving the single
-	// COLOR pin. On a 7800 the 2600's colour never reaches a pin of its own, so the
-	// codes are what get selected, not two finished composite signals.
+	// One output stage for both chips, which is what the board has: its ladder
+	// OR-gates the two chips' luma and sync lines and sums their COLOR pins, so
+	// whichever chip is running sets the node while the other rests low. Selecting
+	// the codes here gives the same node voltage under that condition.
 	wire        c_maria = maria_en;
+	assign comp_maria = c_maria;
 	wire [3:0]  c_col   = c_maria ? maria_chroma : tia_chroma;
 	wire [3:0]  c_lum   = c_maria ? maria_luma   : {tia_luma, 1'b0};
 	wire        c_hs    = c_maria ? maria_hsync  : tia_hsync;
-	wire        c_vs    = c_maria ? maria_vsync  : tia_vsync;
+	// MARIA's SYNC pin is the exclusive-or of its two syncs, measured on the
+	// pin: rows 0-2 are the complement of a normal line. The TIA's is the OR.
+	wire        c_sync  = c_maria ? (maria_hsync ^ maria_vsync) : (tia_hsync | tia_vsync);
 	wire        c_hb    = c_maria ? maria_hblank : tia_hblank;
 	wire        c_vb    = c_maria ? maria_vblank : tia_vblank;
 
@@ -518,26 +523,17 @@ module Atari7800 #(
 		.burst_off    (c_maria ? 10'd44 : 10'd80),
 		.chroma_scale (c_maria ? 9'd256 : 9'd236),
 		.pix_samples  (c_maria ? 2'd2   : 2'd0),
-		.phase_adj    (2'd1),
+		.phase_adj    (2'd3),
 		.col          (c_col),
 		.lum          (c_lum),
 		.blank        (c_hb || c_vb),
 		.hsync        (c_hs),
+		.sync         (c_sync),
 		.pix_tick     (c_maria ? mclk0 : tia_pix_ce),
-		.hblank       (c_hb),
-		.vblank       (c_vb),
-		.vsync        (c_vs),
 		.temp         (pal_temp),
 		.comp         (comp),
-		.sample_tog   (comp_tog),
-		.hs_out       (comp_hs),
-		.vs_out       (comp_vs),
-		.hb_out       (comp_hb),
-		.vb_out       (comp_vb)
+		.sample_tog   (comp_tog)
 	);
-
-	assign comp_burst_start = c_maria ? 10'd12 : 10'd24;
-	assign comp_burst_len   = c_maria ? 10'd36 : 10'd56;
 
 	video_mux mux
 	(

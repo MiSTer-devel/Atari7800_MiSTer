@@ -177,6 +177,7 @@ logic [15:0] selected_address;
 logic DLI_flag;
 logic addr_latch;
 logic holey;
+logic holey_fetch;
 wire holey8 = (incremented_address[11] & A11en);
 wire holey16 = 	(incremented_address[12] & A12en);
 // This arcane block of comparisons is a direct implementation of the state machine
@@ -325,7 +326,11 @@ always_ff @(posedge clk_sys) begin
 		XEN <= {XEN2, XEN1, XEN0}; // Gated by phi2, then phi1
 		addr_latch <= ALATCON; // gated by phi2, then phi1
 		add_sel <= ASEL; // Gated by phi2, then phi1
-		latch_byte <= ELRWA; // gated by phi2, then phi1
+		// A fetch that lands in a hole spends its cycle but writes nothing.
+		// holey describes the address during its fetch cycle; the ELRWA that
+		// would latch that byte comes one cycle later.
+		holey_fetch <= holey;
+		latch_byte <= ELRWA && ~holey_fetch; // gated by phi2, then phi1
 		halt_en <= vbe_halt || hbs_halt;
 		holey <= add_sel && ((holey8 || holey16) && incremented_address[15]);
 
@@ -533,6 +538,7 @@ always_ff @(posedge clk_sys) begin
 		cond_lo <= 0;
 		data_en <= 0;
 		holey <= 0;
+		holey_fetch <= 0;
 		latch_byte <= 0;
 		addr_latch <= 0;
 		data_en <= 0;
